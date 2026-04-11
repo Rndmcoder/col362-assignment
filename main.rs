@@ -1,236 +1,405 @@
-// // done reading
-// use anyhow::{Context, Result};
-// use clap::Parser;
-// use common::query::Query;
-// use db_config::DbContext;
-// use std::{io::{BufRead, BufReader, Read, Write}, string};
-
-// use crate::{
-//     cli::CliOptions,
-//     io_setup::{setup_disk_io, setup_monitor_io},
-// };
-// use giveoutput::Executor;
-// use once_cell::sync::Lazy;
-// use std::sync::Mutex;
-
-// pub static FILE_ID: Lazy<Mutex<String>> = Lazy::new(|| {
-//     Mutex::new(String::new())
-// });
-
-// mod cli;
-// mod io_setup;
-// mod giveoutput;
-
-// fn db_main() -> Result<()> {
-//     let cli_options = CliOptions::parse();
-
-//     // Use the ctx to the tables and stats
-//     let ctx = DbContext::load_from_file(cli_options.get_config_path())?;
-//     // println!("context path is {:?}",cli_options.get_config_path());
-//     for table_spec in ctx.get_table_specs() {
-//         println!("Table: {}", table_spec.name);
-//         println!("File id: {}", table_spec.file_id);
-//         for column_spec in &table_spec.column_specs {
-//             println!(
-//                 "\tColumn: {} ({:?})",
-//                 column_spec.column_name, column_spec.data_type
-//             );
-//         }
-//         println!();
-//     }
-
-//     // Setups and provides handler to talk with disk and monitor
-//     let (disk_in, mut disk_out) = setup_disk_io();
-//     let (monitor_in, mut monitor_out) = setup_monitor_io();
-
-//     // Use buffered reader to read lines easier (buffers input/ output to some stream)
-//     let mut disk_buf_reader = BufReader::new(disk_in);
-//     let mut monitor_buf_reader = BufReader::new(monitor_in);
-
-//     // Temporary variable to read a line of input
-//     let mut input_line = String::new();
-
-//     // Read query form monitor-> monitor probably only sends just the query
-//     monitor_buf_reader.read_line(&mut input_line)?;
-//     let query: Query = serde_json::from_str(&input_line).unwrap();
-//     println!("Input query is: {:#?}", query); // # is for the pretty print
-
-//     // Interacting with with Disk
-
-//     // Get block size
-//     // the get block-size is a command to the disc
-//     disk_out.write_all("get block-size\n".as_bytes())?;
-//     disk_out.flush()?;
-
-//     input_line.clear();
-//     disk_buf_reader.read_line(&mut input_line)?;
-//     let block_size: u64 = input_line.trim().parse()?;
-
-//     println!("block size is {}", block_size);
-
-//     disk_out.write_all("get block 0 1\n".as_bytes())?;
-//     disk_out.flush()?;
-
-//     let mut buf = vec![0u8; block_size as usize];
-//     disk_buf_reader.read_exact(&mut buf)?;
-
-//     println!(
-//         "First few bytes of block 0 contains {:?}",
-//         String::from_utf8_lossy(&buf[..50])
-//     );
-
-//     // Get memory limit from monitor
-//     input_line.clear();
-//     monitor_out.write_all("get_memory_limit\n".as_bytes())?;
-//     monitor_out.flush()?;
-//     monitor_buf_reader.read_line(&mut input_line)?;
-//     let memory_limit_mb: u32 = input_line.trim().parse()?;
-//     println!("Memory limit is set to {} MB", memory_limit_mb);
-
-//     // akshit added code
-//     // let mut executor = Executor::new(disk_in, &mut disk_out, &ctx)?;
-//     let mut executor = Executor::new(disk_buf_reader, &mut disk_out, &ctx)?;
-//     let result = executor.execute(&query.root)?;
-
-//     // Send result of query to monitor for validation
-//     /*
-//     monitor_out.write_all("validate\n".as_bytes())?;
-//     monitor_out.write_all("1|hello|DBMS|\n".as_bytes())?;
-//     monitor_out.write_all("!\n".as_bytes())?;
-//     monitor_out.flush()?;
-//     */
-
-//     monitor_out.write_all(b"validate\n")?;
-
-//     // for row in result {
-//     //     let mut line = String::new();
-//     //     for (_, v) in row {
-//     //         line.push_str(&v);
-//     //         line.push('|');
-//     //     }
-//     //     line.push('\n');
-//     //     monitor_out.write_all(line.as_bytes())?;
-//     // }
-
-
-//     for table_spec in ctx.get_table_specs(){
-//         if table_spec.file_id == *FILE_ID.lock().unwrap(){
-//             println!("Found matching table spec for file id {}", *FILE_ID.lock().unwrap());
-//             for row in &result{
-//                 let mut line = String::new();
-//                 for column_spec in &table_spec.column_specs {
-//                     let column_name = &column_spec.column_name;
-//                     let value = row.get(column_name).map(|s| s.as_str()).unwrap_or("");
-//                     println!("For column {}, got value {}", column_name, value);
-//                     line.push_str(value);
-//                     line.push('|');
-//                 }
-//                 line.push('\n');
-//                 monitor_out.write_all(line.as_bytes())?;
-//             }
-//         }
-//     }
-
-//     monitor_out.write_all(b"!\n")?;
-//     monitor_out.flush()?;
-
-//     // for row in &result {
-//     //     println!("{:?}", row);
-//     // }
-
-//     Ok(())
-// }
-
-// fn main() -> Result<()> {
-//     db_main().with_context(|| "From Database")
-// }
-
-use anyhow::{Context, Result};
-use clap::Parser;
-use common::query::Query;
+use anyhow::Result;
+use std::io::{BufRead, Write};
+use common::query::*;
 use db_config::DbContext;
-use std::io::{BufRead, BufReader, Write};
-use crate::giveoutput::get_output_columns;  // at the top with other use statements
+use common::DataType;
 
-use crate::{
-    cli::CliOptions,
-    io_setup::{setup_disk_io, setup_monitor_io},
-};
-use giveoutput::Executor;
+type Row = Vec<(String, String)>;   // ✅ ORDERED
+type Table = Vec<Row>;
 
-mod cli;
-mod io_setup;
-mod giveoutput;
+pub struct Executor<'a, R: BufRead, W: Write> {
+    disk_in: R,
+    disk_out: &'a mut W,
+    block_size: u64,
+    ctx: &'a DbContext,
+}
 
-fn db_main() -> Result<()> {
-    let cli_options = CliOptions::parse();
+impl<'a, R: BufRead, W: Write> Executor<'a, R, W> {
+    pub fn new(mut disk_in: R, disk_out: &'a mut W, ctx: &'a DbContext) -> Result<Self> {
+        disk_out.write_all(b"get block-size\n")?;
+        disk_out.flush()?;
 
-    let ctx = DbContext::load_from_file(cli_options.get_config_path())?;
-
-    for table_spec in ctx.get_table_specs() {
-        println!("Table: {}", table_spec.name);
-        println!("File id: {}", table_spec.file_id);
-        for column_spec in &table_spec.column_specs {
-            println!(
-                "\tColumn: {} ({:?})",
-                column_spec.column_name, column_spec.data_type
-            );
-        }
-        println!();
-    }
-
-    let (disk_in, mut disk_out) = setup_disk_io();
-    let (monitor_in, mut monitor_out) = setup_monitor_io();
-
-    let mut disk_buf_reader = BufReader::new(disk_in);
-    let mut monitor_buf_reader = BufReader::new(monitor_in);
-
-    let mut input_line = String::new();
-    monitor_buf_reader.read_line(&mut input_line)?;
-    let query: Query = serde_json::from_str(&input_line).unwrap();
-    println!("Input query is: {:#?}", query);
-
-    // Get memory limit from monitor
-    input_line.clear();
-    monitor_out.write_all("get_memory_limit\n".as_bytes())?;
-    monitor_out.flush()?;
-    monitor_buf_reader.read_line(&mut input_line)?;
-    let memory_limit_mb: u32 = input_line.trim().parse()?;
-    println!("Memory limit is set to {} MB", memory_limit_mb);
-
-    // NOTE: do NOT issue "get block-size" here manually anymore —
-    // Executor::new() does it internally. Any extra disk protocol
-    // commands issued here would desync the reader inside Executor.
-    let mut executor = Executor::new(disk_buf_reader, &mut disk_out, &ctx)?;
-    let result = executor.execute(&query.root)?;
-
-    // Derive column output order directly from the query tree.
-    // This correctly handles Scan, Filter, Sort, Project, and Cross.
-    let output_columns = get_output_columns(&query.root, &ctx);    println!("Output columns in order: {:?}", output_columns);
-
-    monitor_out.write_all(b"validate\n")?;
-
-    for row in &result {
         let mut line = String::new();
-        for col_name in &output_columns {
-            // let value = row.get(col_name).map(|s| s.as_str()).unwrap_or("");
-            let value = row.iter()
-            .find(|(k, _)| k == col_name)
-            .map(|(_, v)| v.as_str())
-            .unwrap_or("");
-            line.push_str(value);
-            line.push('|');
-        }
-        line.push('\n');
-        monitor_out.write_all(line.as_bytes())?;
+        disk_in.read_line(&mut line)?;
+        let block_size: u64 = line.trim().parse()?;
+
+        Ok(Self { disk_in, disk_out, block_size, ctx })
     }
 
-    monitor_out.write_all(b"!\n")?;
-    monitor_out.flush()?;
+    pub fn execute(&mut self, op: &QueryOp) -> Result<Table> {
+        let result = match op {
+            QueryOp::Scan(data) => self.execute_scan(data),
+            QueryOp::Filter(data) => self.execute_filter(data),
+            QueryOp::Project(data) => self.execute_project(data),
+            QueryOp::Cross(data) => self.execute_cross(data),
+            QueryOp::Sort(data) => self.execute_sort(data),
+        }?;
 
+        // ✅ DEBUG PRINT
+        println!("\n=== {:?} OUTPUT ({} rows) ===", op, result.len());
+        for row in result.iter().take(3) {
+            println!("{:?}", row);
+        }
+        
+        if let QueryOp::Filter(filter_data) = op {
+            // check it's the specific filter you care about
+            if filter_data.predicates.len() == 1 {
+                let p = &filter_data.predicates[0];
+
+                if p.column_name == "c_nationkey"
+                    && matches!(p.operator, ComparisionOperator::GTE)
+                    && matches!(p.value, ComparisionValue::I32(14))
+                {
+                    println!("=== FULL OUTPUT ===");
+                    for row in result.iter().take(321) {
+                        println!("{:?}", row);
+                    }
+                }
+            }
+        }
+        Ok(result)
+    }
+
+    // ---------------- SCAN ----------------
+    fn execute_scan(&mut self, data: &ScanData) -> Result<Table> {
+        let table_spec = self
+            .ctx
+            .get_table_specs()
+            .iter()
+            .find(|t| t.name == data.table_id)
+            .expect("table not found");
+
+        let file_id = table_spec.file_id.clone();
+
+        let mut line = String::new();
+
+        // --- metadata ---
+        self.disk_out.write_all(format!("get file start-block {}\n", file_id).as_bytes())?;
+        self.disk_out.flush()?;
+        self.disk_in.read_line(&mut line)?;
+        let start_block: u64 = line.trim().parse()?;
+        line.clear();
+
+        self.disk_out.write_all(format!("get file num-blocks {}\n", file_id).as_bytes())?;
+        self.disk_out.flush()?;
+        self.disk_in.read_line(&mut line)?;
+        let num_blocks: u64 = line.trim().parse()?;
+        line.clear();
+
+        self.disk_out.write_all(format!("get block {} {}\n", start_block, num_blocks).as_bytes())?;
+        self.disk_out.flush()?;
+
+        let total_bytes = (num_blocks * self.block_size) as usize;
+        let mut buf = vec![0u8; total_bytes];
+
+        let mut filled = 0;
+        while filled < total_bytes {
+            let available = self.disk_in.fill_buf()?;
+            if available.is_empty() { break; }
+
+            let to_copy = available.len().min(total_bytes - filled);
+            buf[filled..filled + to_copy].copy_from_slice(&available[..to_copy]);
+            self.disk_in.consume(to_copy);
+            filled += to_copy;
+        }
+
+        println!("[SCAN DEBUG] bytes_filled = {}", filled);
+
+        let mut table = Vec::new();
+        let mut offset = 0;
+
+        while offset < filled {
+            // 🔥 skip padding BEFORE starting row
+            // while offset < filled && buf[offset] == 0 {
+            //     offset += 1;
+            // }
+
+            if offset >= filled {
+                break;
+            }
+
+            let row_start = offset;
+            let mut row: Row = Vec::new();
+            let mut local_offset = offset;
+            let mut valid_row = true;
+
+            for col in &table_spec.column_specs {
+                let value = match col.data_type {
+                    DataType::Int32 => {
+                        if local_offset + 4 > filled {
+                            valid_row = false;
+                            break;
+                        }
+                        let bytes: [u8; 4] = buf[local_offset..local_offset+4].try_into().unwrap();
+                        local_offset += 4;
+
+                        let v = i32::from_le_bytes(bytes);
+                        v.to_string()   // ✅ allow 0
+                    }
+
+                    DataType::Int64 => {
+                        if local_offset + 8 > filled {
+                            valid_row = false;
+                            break;
+                        }
+                        let bytes: [u8; 8] = buf[local_offset..local_offset+8].try_into().unwrap();
+                        local_offset += 8;
+
+                        let v = i64::from_le_bytes(bytes);
+                        v.to_string()
+                    }
+
+                    DataType::Float64 => {
+                        if local_offset + 8 > filled {
+                            valid_row = false;
+                            break;
+                        }
+                        let bytes: [u8; 8] = buf[local_offset..local_offset+8].try_into().unwrap();
+                        local_offset += 8;
+
+                        let v = f64::from_le_bytes(bytes);
+
+                        // ❗ ONLY reject true corruption
+                        if !v.is_finite() {
+                            valid_row = false;
+                            break;
+                        }
+                        if v.fract() == 0.0 {
+                            format!("{:.1}", v) // show as 10.0 instead of 10
+                        } else {
+                            v.to_string()
+                        }
+                    }
+
+                    DataType::String => {
+                        let start = local_offset;
+
+                        while local_offset < filled && buf[local_offset] != 0 {
+                            local_offset += 1;
+                        }
+
+                        if local_offset >= filled {
+                            valid_row = false;
+                            break;
+                        }
+
+                        let s = String::from_utf8_lossy(&buf[start..local_offset]).to_string();
+
+                        // ❗ reject empty string
+                        if s.is_empty() {
+                            valid_row = false;
+                            break;
+                        }
+
+                        local_offset += 1; // skip string null
+                        s
+                    }
+
+                    _ => panic!("Unsupported type"),
+                };
+
+                let key = format!("{}.{}", data.table_id, col.column_name);
+                row.push((key, value));
+            }
+
+            if !valid_row || row.len() != table_spec.column_specs.len() {
+                // println!("[SCAN DEBUG] Skipping malformed row at offset {}", row_start);
+
+                // 🔥 move forward safely
+                offset = row_start + 1;
+                continue;
+            }
+
+            // println!("[SCAN DEBUG] ROW = {:?}", row);
+            table.push(row);
+
+            // ✅ move to end of row
+            offset = local_offset;
+
+            // 🔥 CRITICAL: skip ALL padding after row
+            // while offset < filled && buf[offset] == 0 {
+            //     offset += 1;
+            // }
+        }
+
+        println!("[SCAN DEBUG] TOTAL ROWS = {}", table.len());
+        Ok(table)
+    }
+
+
+    // ---------------- FILTER ----------------
+    fn execute_filter(&mut self, data: &FilterData) -> Result<Table> {
+        let input = self.execute(&data.underlying)?;
+
+        Ok(input
+            .into_iter()
+            .filter(|row| self.eval_preds(row, &data.predicates))
+            .collect())
+    }
+
+    fn get_val<'b>(&self, row: &'b Row, col: &String) -> Option<&'b String> {
+        row.iter()
+            .find(|(k, _)| k == col || k.ends_with(&format!(".{}", col)))
+            .map(|(_, v)| v)
+    }
+
+    fn eval_preds(&self, row: &Row, preds: &[Predicate]) -> bool {
+        use std::cmp::Ordering;
+
+        preds.iter().all(|p| {
+            let lhs = match self.get_val(row, &p.column_name) {
+                Some(v) => v,
+                None => return false,
+            };
+
+            // Convert RHS into owned String (safe, no dangling refs)
+            let rhs_owned: Option<String> = match &p.value {
+                ComparisionValue::Column(c) => self.get_val(row, c).cloned(),
+                ComparisionValue::String(s) => Some(s.clone()),
+                ComparisionValue::I32(v) => Some(v.to_string()),
+                ComparisionValue::I64(v) => Some(v.to_string()),
+                ComparisionValue::F32(v) => Some(v.to_string()),
+                ComparisionValue::F64(v) => Some(v.to_string()),
+            };
+
+            let rhs = match rhs_owned {
+                Some(ref r) => r,
+                None => return false,
+            };
+
+            // 🔥 Try numeric comparison first
+            let ord = match (lhs.parse::<f64>(), rhs.parse::<f64>()) {
+                (Ok(l), Ok(r)) => l.partial_cmp(&r).unwrap_or(Ordering::Equal),
+                _ => lhs.cmp(rhs), // fallback to string comparison
+            };
+
+            match p.operator {
+                ComparisionOperator::EQ => ord == Ordering::Equal,
+                ComparisionOperator::NE => ord != Ordering::Equal,
+                ComparisionOperator::GT => ord == Ordering::Greater,
+                ComparisionOperator::GTE => ord == Ordering::Greater || ord == Ordering::Equal,
+                ComparisionOperator::LT => ord == Ordering::Less,
+                ComparisionOperator::LTE => ord == Ordering::Less || ord == Ordering::Equal,
+            }
+        })
+    }
+
+    // ---------------- PROJECT ----------------
+    fn execute_project(&mut self, data: &ProjectData) -> Result<Table> {
+        let input = self.execute(&data.underlying)?;
+
+        Ok(input.into_iter().map(|row| {
+            let mut new_row = Vec::new();
+
+            for (from, to) in &data.column_name_map {
+                if let Some(val) = self.get_val(&row, from) {
+                    new_row.push((to.clone(), val.clone()));
+                }
+            }
+
+            new_row
+        }).collect())
+    }
+
+    // ---------------- CROSS ----------------
+    fn execute_cross(&mut self, data: &CrossData) -> Result<Table> {
+        let left = self.execute(&data.left)?;
+        let right = self.execute(&data.right)?;
+
+        let mut result = Vec::new();
+
+        for l in &left {
+            for r in &right {
+                let mut row = l.clone();
+                row.extend(r.clone());
+                result.push(row);
+            }
+        }
+
+        Ok(result)
+    }
+
+    // ---------------- SORT ----------------
+    fn execute_sort(&mut self, data: &SortData) -> Result<Table> {
+        let mut input = self.execute(&data.underlying)?;
+
+        input.sort_by(|a, b| {
+            for spec in &data.sort_specs {
+                let va_opt = self.get_val(a, &spec.column_name);
+                let vb_opt = self.get_val(b, &spec.column_name);
+
+                let ord = match (va_opt, vb_opt) {
+                    (Some(va), Some(vb)) => {
+                        // 🔥 try numeric comparison
+                        match (va.parse::<i64>(), vb.parse::<i64>()) {
+                            (Ok(na), Ok(nb)) => na.cmp(&nb),
+                            _ => va.cmp(vb), // fallback string compare
+                        }
+                    }
+                    (None, None) => std::cmp::Ordering::Equal,
+                    (None, _) => std::cmp::Ordering::Less,
+                    (_, None) => std::cmp::Ordering::Greater,
+                };
+
+                if ord != std::cmp::Ordering::Equal {
+                    return if spec.ascending { ord } else { ord.reverse() };
+                }
+            }
+
+            std::cmp::Ordering::Equal
+        });
+
+        Ok(input)
+    }
+}
+
+// ---------------- OUTPUT ----------------
+pub fn print_output<W: Write>(
+    out: &mut W,
+    table: &Table,
+    columns: Vec<String>,
+) -> Result<()> {
+    for row in table {
+        for col in &columns {
+            let val = row.iter()
+                .find(|(k, _)| k == col)
+                .map(|(_, v)| v.clone())
+                .unwrap_or_default();
+
+            write!(out, "{}|", val)?;
+        }
+        writeln!(out)?;
+    }
     Ok(())
 }
 
-fn main() -> Result<()> {
-    db_main().with_context(|| "From Monitor")
+pub fn get_output_columns(op: &QueryOp, ctx: &DbContext) -> Vec<String> {
+    match op {
+        QueryOp::Scan(data) => {
+            ctx.get_table_specs()
+                .iter()
+                .find(|t| t.name == data.table_id)
+                .map(|spec| {
+                    spec.column_specs
+                        .iter()
+                        .map(|c| format!("{}.{}", data.table_id, c.column_name))
+                        .collect()
+                })
+                .unwrap_or_default()
+        }
+        QueryOp::Filter(data) => get_output_columns(&data.underlying, ctx),
+        QueryOp::Sort(data) => get_output_columns(&data.underlying, ctx),
+        QueryOp::Project(data) => {
+            data.column_name_map
+                .iter()
+                .map(|(_, to)| to.clone())
+                .collect()
+        }
+        QueryOp::Cross(data) => {
+            let mut left = get_output_columns(&data.left, ctx);
+            let right = get_output_columns(&data.right, ctx);
+            left.extend(right);
+            left
+        }
+    }
 }
