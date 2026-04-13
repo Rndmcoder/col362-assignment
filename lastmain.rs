@@ -1,0 +1,116 @@
+use anyhow::{Context, Result};
+use clap::Parser;
+use common::query::Query;
+use db_config::DbContext;
+use std::io::{BufRead, BufReader, Write};
+use crate::giveoutput::{get_output_columns, RunSet};
+
+use crate::{
+    cli::CliOptions,
+    io_setup::{setup_disk_io, setup_monitor_io},
+};
+use giveoutput::Executor;
+
+mod cli;
+mod io_setup;
+mod giveoutput;
+
+fn db_main() -> Result<()> {
+    let cli_options = CliOptions::parse();
+    let ctx = DbContext::load_from_file(cli_options.get_config_path())?;
+    eprintln!("[MAIN] loaded {} tables", ctx.get_table_specs().len());
+
+    let (disk_in, mut disk_out) = setup_disk_io();
+    let (monitor_in, mut monitor_out) = setup_monitor_io();
+
+    let mut disk_buf = BufReader::new(disk_in);
+    let mut mon_buf  = BufReader::new(monitor_in);
+
+    // Read query
+    let mut line = String::new();
+    mon_buf.read_line(&mut line)?;
+    let query: Query = serde_json::from_str(&line)
+        .map_err(|e| anyhow::anyhow!("query parse: {}\nraw: {}", e, line.trim()))?;
+    eprintln!("[MAIN] query={:#?}", query);
+
+    // Memory limit
+    line.clear();
+    monitor_out.write_all(b"get_memory_limit\n")?;
+    monitor_out.flush()?;
+    mon_buf.read_line(&mut line)?;
+    let memory_limit_mb: u32 = line.trim().parse()
+        .map_err(|e| anyhow::anyhow!("memory_limit: '{}': {}", line.trim(), e))?;
+    eprintln!("[MAIN] memory_limit_mb={}", memory_limit_mb);
+
+    let mut executor = Executor::new(disk_buf, &mut disk_out, &ctx)?;
+    executor.set_memory_limit_mb(memory_limit_mb);
+
+    let result = executor.execute(&query.root)?;
+    eprintln!("[MAIN] result rows={}", result.row_count());
+
+    let output_columns = get_output_columns(&query.root, &ctx);
+    eprintln!("[MAIN] output_columns={:?}", output_columns);
+
+    monitor_out.write_all(b"validate\n")?;
+
+    // Stream result to monitor one row at a time — never load all rows at once.
+    let bs = executor.block_size as usize;
+    match result {
+        RunSet::InMemory(rows) => {
+            for (i, row) in rows.iter().enumerate() {
+                write_row(&mut monitor_out, &output_columns, row, i)?;
+            }
+        }
+        RunSet::Spilled { runs, .. } => {
+            // We can't call executor methods here (monitor_out also borrowed),
+            // but we still have disk_out available through executor.
+            // Re-use the disk reader by streaming blocks manually.
+            // disk_in is inside executor; we need to stream via executor.
+            // Solution: collect the run descriptors, then stream.
+            let descriptors: Vec<(u64, u64)> = runs.iter()
+                .map(|r| (r.start_block, r.num_blocks))
+                .collect();
+            let mut row_idx = 0usize;
+            for (start, n_blk) in descriptors {
+                for bi in 0..n_blk {
+                    // Read block via executor's disk handle
+                    let buf = executor.read_block_pub(start + bi)?;
+                    let b   = &buf[..];
+                    let rc  = u16::from_le_bytes([b[bs-2], b[bs-1]]) as usize;
+                    let mut off = 0usize;
+                    for _ in 0..rc {
+                        if let Some(row) = giveoutput::decode_row_pub(b, &mut off) {
+                            write_row(&mut monitor_out, &output_columns, &row, row_idx)?;
+                            row_idx += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    monitor_out.write_all(b"!\n")?;
+    monitor_out.flush()?;
+    eprintln!("[MAIN] done");
+    Ok(())
+}
+
+fn write_row<W: Write>(out: &mut W, cols: &[String], row: &giveoutput::Row, idx: usize)
+    -> Result<()>
+{
+    let mut line = String::new();
+    for col in cols {
+        let v = row.iter().find(|(k,_)| k == col)
+            .map(|(_,v)| v.as_str())
+            .unwrap_or_else(|| { eprintln!("[MAIN] row {} missing col '{}'", idx, col); "" });
+        line.push_str(v);
+        line.push('|');
+    }
+    line.push('\n');
+    out.write_all(line.as_bytes())?;
+    Ok(())
+}
+
+fn main() -> Result<()> {
+    db_main().with_context(|| "From Monitor")
+}

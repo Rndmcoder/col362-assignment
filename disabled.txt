@@ -1,0 +1,2274 @@
+{
+      "execution_name": "SELECT n_nationkey, n_name, n_regionkey, '' FROM nation;",
+      "disabled": false,
+      "sort_before_check": true,
+      "query": {
+        "root": {
+          "Project": {
+            "column_name_map": [
+              [
+                "n_nationkey",
+                "n_nationkey"
+              ],
+              [
+                "n_name",
+                "n_name"
+              ],
+              [
+                "n_regionkey",
+                "n_regionkey"
+              ]
+            ],
+            "underlying": {
+              "Scan": {
+                "table_id": "nation"
+              }
+            }
+          }
+        }
+      },
+      "expected_output_file": "/mnt/c/study/sem6/col362/noraceassignment/my-awesome-db-dev-public_tests/scratch/runtimes/tpch/expected_output_1.csv",
+      "memory_limit_mb": 64
+    },
+    {
+      "execution_name": "SELECT r_regionkey, r_name, '' FROM region;",
+      "disabled": false,
+      "sort_before_check": true,
+      "query": {
+        "root": {
+          "Project": {
+            "column_name_map": [
+              [
+                "r_regionkey",
+                "r_regionkey"
+              ],
+              [
+                "r_name",
+                "r_name"
+              ]
+            ],
+            "underlying": {
+              "Scan": {
+                "table_id": "region"
+              }
+            }
+          }
+        }
+      },
+      "expected_output_file": "/mnt/c/study/sem6/col362/noraceassignment/my-awesome-db-dev-public_tests/scratch/runtimes/tpch/expected_output_2.csv",
+      "memory_limit_mb": 64
+    },
+    {
+      "execution_name": "SELECT p_partkey, p_name, p_mfgr, p_brand, p_type, '' FROM part;",
+      "disabled": false,
+      "sort_before_check": true,
+      "query": {
+        "root": {
+          "Project": {
+            "column_name_map": [
+              [
+                "p_partkey",
+                "p_partkey"
+              ],
+              [
+                "p_name",
+                "p_name"
+              ],
+              [
+                "p_mfgr",
+                "p_mfgr"
+              ],
+              [
+                "p_brand",
+                "p_brand"
+              ],
+              [
+                "p_type",
+                "p_type"
+              ]
+            ],
+            "underlying": {
+              "Scan": {
+                "table_id": "part"
+              }
+            }
+          }
+        }
+      },
+      "expected_output_file": "/mnt/c/study/sem6/col362/noraceassignment/my-awesome-db-dev-public_tests/scratch/runtimes/tpch/expected_output_3.csv",
+      "memory_limit_mb": 64
+    },
+    {
+      "execution_name": "SELECT s_suppkey, s_name, s_acctbal, '' FROM supplier;",
+      "disabled": false,
+      "sort_before_check": true,
+      "query": {
+        "root": {
+          "Project": {
+            "column_name_map": [
+              [
+                "s_suppkey",
+                "s_suppkey"
+              ],
+              [
+                "s_name",
+                "s_name"
+              ],
+              [
+                "s_acctbal",
+                "s_acctbal"
+              ]
+            ],
+            "underlying": {
+              "Scan": {
+                "table_id": "supplier"
+              }
+            }
+          }
+        }
+      },
+      "expected_output_file": "/mnt/c/study/sem6/col362/noraceassignment/my-awesome-db-dev-public_tests/scratch/runtimes/tpch/expected_output_4.csv",
+      "memory_limit_mb": 64
+    },
+    {
+      "execution_name": "SELECT c_custkey, c_name, c_mktsegment, '' FROM customer;",
+      "disabled": false,
+      "sort_before_check": true,
+      "query": {
+        "root": {
+          "Project": {
+            "column_name_map": [
+              [
+                "c_custkey",
+                "c_custkey"
+              ],
+              [
+                "c_name",
+                "c_name"
+              ],
+              [
+                "c_mktsegment",
+                "c_mktsegment"
+              ]
+            ],
+            "underlying": {
+              "Scan": {
+                "table_id": "customer"
+              }
+            }
+          }
+        }
+      },
+      "expected_output_file": "/mnt/c/study/sem6/col362/noraceassignment/my-awesome-db-dev-public_tests/scratch/runtimes/tpch/expected_output_5.csv",
+      "memory_limit_mb": 64
+    },
+    {
+      "execution_name": "SELECT n_name, '' FROM nation WHERE n_regionkey = 1;",
+      "disabled": false,
+      "sort_before_check": true,
+      "query": {
+        "root": {
+          "Project": {
+            "column_name_map": [
+              [
+                "n_name",
+                "n_name"
+              ]
+            ],
+            "underlying": {
+              "Filter": {
+                "predicates": [
+                  {
+                    "column_name": "n_regionkey",
+                    "operator": "EQ",
+                    "value": {
+                      "I32": 1
+                    }
+                  }
+                ],
+                "underlying": {
+                  "Scan": {
+                    "table_id": "nation"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "expected_output_file": "/mnt/c/study/sem6/col362/noraceassignment/my-awesome-db-dev-public_tests/scratch/runtimes/tpch/expected_output_6.csv",
+      "memory_limit_mb": 64
+    },
+    {
+      "execution_name": "SELECT r_name, '' FROM region WHERE r_name != 'AFRICA';",
+      "disabled": false,
+      "sort_before_check": true,
+      "query": {
+        "root": {
+          "Project": {
+            "column_name_map": [
+              [
+                "r_name",
+                "r_name"
+              ]
+            ],
+            "underlying": {
+              "Filter": {
+                "predicates": [
+                  {
+                    "column_name": "r_name",
+                    "operator": "NE",
+                    "value": {
+                      "String": "AFRICA"
+                    }
+                  }
+                ],
+                "underlying": {
+                  "Scan": {
+                    "table_id": "region"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "expected_output_file": "/mnt/c/study/sem6/col362/noraceassignment/my-awesome-db-dev-public_tests/scratch/runtimes/tpch/expected_output_7.csv",
+      "memory_limit_mb": 64
+    },
+    {
+      "execution_name": "SELECT p_name, p_size, '' FROM part WHERE p_size > 25;",
+      "disabled": false,
+      "sort_before_check": true,
+      "query": {
+        "root": {
+          "Project": {
+            "column_name_map": [
+              [
+                "p_name",
+                "p_name"
+              ],
+              [
+                "p_size",
+                "p_size"
+              ]
+            ],
+            "underlying": {
+              "Filter": {
+                "predicates": [
+                  {
+                    "column_name": "p_size",
+                    "operator": "GT",
+                    "value": {
+                      "I32": 25
+                    }
+                  }
+                ],
+                "underlying": {
+                  "Scan": {
+                    "table_id": "part"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "expected_output_file": "/mnt/c/study/sem6/col362/noraceassignment/my-awesome-db-dev-public_tests/scratch/runtimes/tpch/expected_output_8.csv",
+      "memory_limit_mb": 64
+    },
+    {
+      "execution_name": "SELECT p_partkey, p_retailprice, '' FROM part WHERE p_retailprice >= 1000.00;",
+      "disabled": false,
+      "sort_before_check": true,
+      "query": {
+        "root": {
+          "Project": {
+            "column_name_map": [
+              [
+                "p_partkey",
+                "p_partkey"
+              ],
+              [
+                "p_retailprice",
+                "p_retailprice"
+              ]
+            ],
+            "underlying": {
+              "Filter": {
+                "predicates": [
+                  {
+                    "column_name": "p_retailprice",
+                    "operator": "GTE",
+                    "value": {
+                      "F64": 1000.0
+                    }
+                  }
+                ],
+                "underlying": {
+                  "Scan": {
+                    "table_id": "part"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "expected_output_file": "/mnt/c/study/sem6/col362/noraceassignment/my-awesome-db-dev-public_tests/scratch/runtimes/tpch/expected_output_9.csv",
+      "memory_limit_mb": 64
+    },
+    {
+      "execution_name": "SELECT s_name, s_acctbal, '' FROM supplier WHERE s_acctbal < 0.0;",
+      "disabled": false,
+      "sort_before_check": true,
+      "query": {
+        "root": {
+          "Project": {
+            "column_name_map": [
+              [
+                "s_name",
+                "s_name"
+              ],
+              [
+                "s_acctbal",
+                "s_acctbal"
+              ]
+            ],
+            "underlying": {
+              "Filter": {
+                "predicates": [
+                  {
+                    "column_name": "s_acctbal",
+                    "operator": "LT",
+                    "value": {
+                      "F64": 0.0
+                    }
+                  }
+                ],
+                "underlying": {
+                  "Scan": {
+                    "table_id": "supplier"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "expected_output_file": "/mnt/c/study/sem6/col362/noraceassignment/my-awesome-db-dev-public_tests/scratch/runtimes/tpch/expected_output_10.csv",
+      "memory_limit_mb": 64
+    },
+    {
+      "execution_name": "SELECT c_name, c_mktsegment, '' FROM customer WHERE c_mktsegment = 'AUTOMOBILE';",
+      "disabled": false,
+      "sort_before_check": true,
+      "query": {
+        "root": {
+          "Project": {
+            "column_name_map": [
+              [
+                "c_name",
+                "c_name"
+              ],
+              [
+                "c_mktsegment",
+                "c_mktsegment"
+              ]
+            ],
+            "underlying": {
+              "Filter": {
+                "predicates": [
+                  {
+                    "column_name": "c_mktsegment",
+                    "operator": "EQ",
+                    "value": {
+                      "String": "AUTOMOBILE"
+                    }
+                  }
+                ],
+                "underlying": {
+                  "Scan": {
+                    "table_id": "customer"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "expected_output_file": "/mnt/c/study/sem6/col362/noraceassignment/my-awesome-db-dev-public_tests/scratch/runtimes/tpch/expected_output_11.csv",
+      "memory_limit_mb": 64
+    },
+    {
+      "execution_name": "SELECT o_orderkey, o_totalprice, '' FROM orders WHERE o_orderstatus = 'O';",
+      "disabled": false,
+      "sort_before_check": true,
+      "query": {
+        "root": {
+          "Project": {
+            "column_name_map": [
+              [
+                "o_orderkey",
+                "o_orderkey"
+              ],
+              [
+                "o_totalprice",
+                "o_totalprice"
+              ]
+            ],
+            "underlying": {
+              "Filter": {
+                "predicates": [
+                  {
+                    "column_name": "o_orderstatus",
+                    "operator": "EQ",
+                    "value": {
+                      "String": "O"
+                    }
+                  }
+                ],
+                "underlying": {
+                  "Scan": {
+                    "table_id": "orders"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "expected_output_file": "/mnt/c/study/sem6/col362/noraceassignment/my-awesome-db-dev-public_tests/scratch/runtimes/tpch/expected_output_12.csv",
+      "memory_limit_mb": 64
+    },
+    {
+      "execution_name": "SELECT l_orderkey, l_linenumber, '' FROM lineitem WHERE l_quantity <= 10;",
+      "disabled": false,
+      "sort_before_check": true,
+      "query": {
+        "root": {
+          "Project": {
+            "column_name_map": [
+              [
+                "l_orderkey",
+                "l_orderkey"
+              ],
+              [
+                "l_linenumber",
+                "l_linenumber"
+              ]
+            ],
+            "underlying": {
+              "Filter": {
+                "predicates": [
+                  {
+                    "column_name": "l_quantity",
+                    "operator": "LTE",
+                    "value": {
+                      "I32": 10
+                    }
+                  }
+                ],
+                "underlying": {
+                  "Scan": {
+                    "table_id": "lineitem"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "expected_output_file": "/mnt/c/study/sem6/col362/noraceassignment/my-awesome-db-dev-public_tests/scratch/runtimes/tpch/expected_output_13.csv",
+      "memory_limit_mb": 64
+    },
+    {
+      "execution_name": "SELECT ps_partkey, ps_suppkey, '' FROM partsupp WHERE ps_availqty > 5000;",
+      "disabled": false,
+      "sort_before_check": true,
+      "query": {
+        "root": {
+          "Project": {
+            "column_name_map": [
+              [
+                "ps_partkey",
+                "ps_partkey"
+              ],
+              [
+                "ps_suppkey",
+                "ps_suppkey"
+              ]
+            ],
+            "underlying": {
+              "Filter": {
+                "predicates": [
+                  {
+                    "column_name": "ps_availqty",
+                    "operator": "GT",
+                    "value": {
+                      "I32": 5000
+                    }
+                  }
+                ],
+                "underlying": {
+                  "Scan": {
+                    "table_id": "partsupp"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "expected_output_file": "/mnt/c/study/sem6/col362/noraceassignment/my-awesome-db-dev-public_tests/scratch/runtimes/tpch/expected_output_14.csv",
+      "memory_limit_mb": 64
+    },
+    {
+      "execution_name": "SELECT l_orderkey, l_discount, '' FROM lineitem WHERE l_discount >= 0.05 AND l_discount <= 0.07;",
+      "disabled": false,
+      "sort_before_check": true,
+      "query": {
+        "root": {
+          "Project": {
+            "column_name_map": [
+              [
+                "l_orderkey",
+                "l_orderkey"
+              ],
+              [
+                "l_discount",
+                "l_discount"
+              ]
+            ],
+            "underlying": {
+              "Filter": {
+                "predicates": [
+                  {
+                    "column_name": "l_discount",
+                    "operator": "GTE",
+                    "value": {
+                      "F64": 0.05
+                    }
+                  },
+                  {
+                    "column_name": "l_discount",
+                    "operator": "LTE",
+                    "value": {
+                      "F64": 0.07
+                    }
+                  }
+                ],
+                "underlying": {
+                  "Scan": {
+                    "table_id": "lineitem"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "expected_output_file": "/mnt/c/study/sem6/col362/noraceassignment/my-awesome-db-dev-public_tests/scratch/runtimes/tpch/expected_output_15.csv",
+      "memory_limit_mb": 64
+    },
+    {
+      "execution_name": "SELECT n_name, '' FROM nation ORDER BY n_name, n_nationkey;",
+      "disabled": false,
+      "sort_before_check": false,
+      "query": {
+        "root": {
+          "Project": {
+            "column_name_map": [
+              [
+                "n_name",
+                "n_name"
+              ]
+            ],
+            "underlying": {
+              "Sort": {
+                "sort_specs": [
+                  {
+                    "column_name": "n_name",
+                    "ascending": true
+                  },
+                  {
+                    "column_name": "n_nationkey",
+                    "ascending": true
+                  }
+                ],
+                "underlying": {
+                  "Scan": {
+                    "table_id": "nation"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "expected_output_file": "/mnt/c/study/sem6/col362/noraceassignment/my-awesome-db-dev-public_tests/scratch/runtimes/tpch/expected_output_16.csv",
+      "memory_limit_mb": 64
+    },
+    {
+      "execution_name": "SELECT r_name, '' FROM region ORDER BY r_name DESC, r_regionkey;",
+      "disabled": false,
+      "sort_before_check": false,
+      "query": {
+        "root": {
+          "Project": {
+            "column_name_map": [
+              [
+                "r_name",
+                "r_name"
+              ]
+            ],
+            "underlying": {
+              "Sort": {
+                "sort_specs": [
+                  {
+                    "column_name": "r_name",
+                    "ascending": false
+                  },
+                  {
+                    "column_name": "r_regionkey",
+                    "ascending": true
+                  }
+                ],
+                "underlying": {
+                  "Scan": {
+                    "table_id": "region"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "expected_output_file": "/mnt/c/study/sem6/col362/noraceassignment/my-awesome-db-dev-public_tests/scratch/runtimes/tpch/expected_output_17.csv",
+      "memory_limit_mb": 64
+    },
+    {
+      "execution_name": "SELECT p_brand, p_size, '' FROM part ORDER BY p_brand, p_size DESC, p_partkey;",
+      "disabled": false,
+      "sort_before_check": false,
+      "query": {
+        "root": {
+          "Project": {
+            "column_name_map": [
+              [
+                "p_brand",
+                "p_brand"
+              ],
+              [
+                "p_size",
+                "p_size"
+              ]
+            ],
+            "underlying": {
+              "Sort": {
+                "sort_specs": [
+                  {
+                    "column_name": "p_brand",
+                    "ascending": true
+                  },
+                  {
+                    "column_name": "p_size",
+                    "ascending": false
+                  },
+                  {
+                    "column_name": "p_partkey",
+                    "ascending": true
+                  }
+                ],
+                "underlying": {
+                  "Scan": {
+                    "table_id": "part"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "expected_output_file": "/mnt/c/study/sem6/col362/noraceassignment/my-awesome-db-dev-public_tests/scratch/runtimes/tpch/expected_output_18.csv",
+      "memory_limit_mb": 64
+    },
+    {
+      "execution_name": "SELECT s_acctbal, s_name, '' FROM supplier ORDER BY s_acctbal DESC, s_suppkey;",
+      "disabled": false,
+      "sort_before_check": false,
+      "query": {
+        "root": {
+          "Project": {
+            "column_name_map": [
+              [
+                "s_acctbal",
+                "s_acctbal"
+              ],
+              [
+                "s_name",
+                "s_name"
+              ]
+            ],
+            "underlying": {
+              "Sort": {
+                "sort_specs": [
+                  {
+                    "column_name": "s_acctbal",
+                    "ascending": false
+                  },
+                  {
+                    "column_name": "s_suppkey",
+                    "ascending": true
+                  }
+                ],
+                "underlying": {
+                  "Scan": {
+                    "table_id": "supplier"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "expected_output_file": "/mnt/c/study/sem6/col362/noraceassignment/my-awesome-db-dev-public_tests/scratch/runtimes/tpch/expected_output_19.csv",
+      "memory_limit_mb": 64
+    },
+    {
+      "execution_name": "SELECT c_mktsegment, c_acctbal, '' FROM customer ORDER BY c_mktsegment, c_acctbal DESC, c_custkey;",
+      "disabled": false,
+      "sort_before_check": false,
+      "query": {
+        "root": {
+          "Project": {
+            "column_name_map": [
+              [
+                "c_mktsegment",
+                "c_mktsegment"
+              ],
+              [
+                "c_acctbal",
+                "c_acctbal"
+              ]
+            ],
+            "underlying": {
+              "Sort": {
+                "sort_specs": [
+                  {
+                    "column_name": "c_mktsegment",
+                    "ascending": true
+                  },
+                  {
+                    "column_name": "c_acctbal",
+                    "ascending": false
+                  },
+                  {
+                    "column_name": "c_custkey",
+                    "ascending": true
+                  }
+                ],
+                "underlying": {
+                  "Scan": {
+                    "table_id": "customer"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "expected_output_file": "/mnt/c/study/sem6/col362/noraceassignment/my-awesome-db-dev-public_tests/scratch/runtimes/tpch/expected_output_20.csv",
+      "memory_limit_mb": 64
+    },
+    {
+      "execution_name": "SELECT n_name, '' FROM nation WHERE n_regionkey = 3 ORDER BY n_name DESC, n_nationkey;",
+      "disabled": false,
+      "sort_before_check": false,
+      "query": {
+        "root": {
+          "Project": {
+            "column_name_map": [
+              [
+                "n_name",
+                "n_name"
+              ]
+            ],
+            "underlying": {
+              "Sort": {
+                "sort_specs": [
+                  {
+                    "column_name": "n_name",
+                    "ascending": false
+                  },
+                  {
+                    "column_name": "n_nationkey",
+                    "ascending": true
+                  }
+                ],
+                "underlying": {
+                  "Filter": {
+                    "predicates": [
+                      {
+                        "column_name": "n_regionkey",
+                        "operator": "EQ",
+                        "value": {
+                          "I32": 3
+                        }
+                      }
+                    ],
+                    "underlying": {
+                      "Scan": {
+                        "table_id": "nation"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "expected_output_file": "/mnt/c/study/sem6/col362/noraceassignment/my-awesome-db-dev-public_tests/scratch/runtimes/tpch/expected_output_21.csv",
+      "memory_limit_mb": 64
+    },
+    {
+      "execution_name": "SELECT p_name, '' FROM part WHERE p_size < 10 ORDER BY p_name, p_partkey;",
+      "disabled": false,
+      "sort_before_check": false,
+      "query": {
+        "root": {
+          "Project": {
+            "column_name_map": [
+              [
+                "p_name",
+                "p_name"
+              ]
+            ],
+            "underlying": {
+              "Sort": {
+                "sort_specs": [
+                  {
+                    "column_name": "p_name",
+                    "ascending": true
+                  },
+                  {
+                    "column_name": "p_partkey",
+                    "ascending": true
+                  }
+                ],
+                "underlying": {
+                  "Filter": {
+                    "predicates": [
+                      {
+                        "column_name": "p_size",
+                        "operator": "LT",
+                        "value": {
+                          "I32": 10
+                        }
+                      }
+                    ],
+                    "underlying": {
+                      "Scan": {
+                        "table_id": "part"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "expected_output_file": "/mnt/c/study/sem6/col362/noraceassignment/my-awesome-db-dev-public_tests/scratch/runtimes/tpch/expected_output_22.csv",
+      "memory_limit_mb": 64
+    },
+    {
+      "execution_name": "SELECT s_name, s_acctbal, '' FROM supplier WHERE s_acctbal > 5000.0 ORDER BY s_acctbal DESC, s_suppkey;",
+      "disabled": false,
+      "sort_before_check": false,
+      "query": {
+        "root": {
+          "Project": {
+            "column_name_map": [
+              [
+                "s_name",
+                "s_name"
+              ],
+              [
+                "s_acctbal",
+                "s_acctbal"
+              ]
+            ],
+            "underlying": {
+              "Sort": {
+                "sort_specs": [
+                  {
+                    "column_name": "s_acctbal",
+                    "ascending": false
+                  },
+                  {
+                    "column_name": "s_suppkey",
+                    "ascending": true
+                  }
+                ],
+                "underlying": {
+                  "Filter": {
+                    "predicates": [
+                      {
+                        "column_name": "s_acctbal",
+                        "operator": "GT",
+                        "value": {
+                          "F64": 5000.0
+                        }
+                      }
+                    ],
+                    "underlying": {
+                      "Scan": {
+                        "table_id": "supplier"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "expected_output_file": "/mnt/c/study/sem6/col362/noraceassignment/my-awesome-db-dev-public_tests/scratch/runtimes/tpch/expected_output_23.csv",
+      "memory_limit_mb": 64
+    },
+    {
+      "execution_name": "SELECT c_name, '' FROM customer WHERE c_mktsegment = 'HOUSEHOLD' ORDER BY c_name, c_custkey;",
+      "disabled": false,
+      "sort_before_check": false,
+      "query": {
+        "root": {
+          "Project": {
+            "column_name_map": [
+              [
+                "c_name",
+                "c_name"
+              ]
+            ],
+            "underlying": {
+              "Sort": {
+                "sort_specs": [
+                  {
+                    "column_name": "c_name",
+                    "ascending": true
+                  },
+                  {
+                    "column_name": "c_custkey",
+                    "ascending": true
+                  }
+                ],
+                "underlying": {
+                  "Filter": {
+                    "predicates": [
+                      {
+                        "column_name": "c_mktsegment",
+                        "operator": "EQ",
+                        "value": {
+                          "String": "HOUSEHOLD"
+                        }
+                      }
+                    ],
+                    "underlying": {
+                      "Scan": {
+                        "table_id": "customer"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "expected_output_file": "/mnt/c/study/sem6/col362/noraceassignment/my-awesome-db-dev-public_tests/scratch/runtimes/tpch/expected_output_24.csv",
+      "memory_limit_mb": 64
+    },
+    {
+      "execution_name": "SELECT o_orderkey, o_totalprice, '' FROM orders WHERE o_orderstatus = 'F' ORDER BY o_totalprice DESC, o_orderkey;",
+      "disabled": false,
+      "sort_before_check": false,
+      "query": {
+        "root": {
+          "Project": {
+            "column_name_map": [
+              [
+                "o_orderkey",
+                "o_orderkey"
+              ],
+              [
+                "o_totalprice",
+                "o_totalprice"
+              ]
+            ],
+            "underlying": {
+              "Sort": {
+                "sort_specs": [
+                  {
+                    "column_name": "o_totalprice",
+                    "ascending": false
+                  },
+                  {
+                    "column_name": "o_orderkey",
+                    "ascending": true
+                  }
+                ],
+                "underlying": {
+                  "Filter": {
+                    "predicates": [
+                      {
+                        "column_name": "o_orderstatus",
+                        "operator": "EQ",
+                        "value": {
+                          "String": "F"
+                        }
+                      }
+                    ],
+                    "underlying": {
+                      "Scan": {
+                        "table_id": "orders"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "expected_output_file": "/mnt/c/study/sem6/col362/noraceassignment/my-awesome-db-dev-public_tests/scratch/runtimes/tpch/expected_output_25.csv",
+      "memory_limit_mb": 64
+    },
+    {
+      "execution_name": "SELECT l_orderkey, l_quantity, '' FROM lineitem WHERE l_shipdate > '1998-01-01' ORDER BY l_quantity DESC, l_orderkey, l_linenumber;",
+      "disabled": false,
+      "sort_before_check": false,
+      "query": {
+        "root": {
+          "Project": {
+            "column_name_map": [
+              [
+                "l_orderkey",
+                "l_orderkey"
+              ],
+              [
+                "l_quantity",
+                "l_quantity"
+              ]
+            ],
+            "underlying": {
+              "Sort": {
+                "sort_specs": [
+                  {
+                    "column_name": "l_quantity",
+                    "ascending": false
+                  },
+                  {
+                    "column_name": "l_orderkey",
+                    "ascending": true
+                  },
+                  {
+                    "column_name": "l_linenumber",
+                    "ascending": true
+                  }
+                ],
+                "underlying": {
+                  "Filter": {
+                    "predicates": [
+                      {
+                        "column_name": "l_shipdate",
+                        "operator": "GT",
+                        "value": {
+                          "String": "1998-01-01"
+                        }
+                      }
+                    ],
+                    "underlying": {
+                      "Scan": {
+                        "table_id": "lineitem"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "expected_output_file": "/mnt/c/study/sem6/col362/noraceassignment/my-awesome-db-dev-public_tests/scratch/runtimes/tpch/expected_output_26.csv",
+      "memory_limit_mb": 64
+    },
+    {
+      "execution_name": "SELECT ps_suppkey, '' FROM partsupp WHERE ps_availqty < 100 ORDER BY ps_suppkey, ps_partkey;",
+      "disabled": false,
+      "sort_before_check": false,
+      "query": {
+        "root": {
+          "Project": {
+            "column_name_map": [
+              [
+                "ps_suppkey",
+                "ps_suppkey"
+              ]
+            ],
+            "underlying": {
+              "Sort": {
+                "sort_specs": [
+                  {
+                    "column_name": "ps_suppkey",
+                    "ascending": true
+                  },
+                  {
+                    "column_name": "ps_partkey",
+                    "ascending": true
+                  }
+                ],
+                "underlying": {
+                  "Filter": {
+                    "predicates": [
+                      {
+                        "column_name": "ps_availqty",
+                        "operator": "LT",
+                        "value": {
+                          "I32": 100
+                        }
+                      }
+                    ],
+                    "underlying": {
+                      "Scan": {
+                        "table_id": "partsupp"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "expected_output_file": "/mnt/c/study/sem6/col362/noraceassignment/my-awesome-db-dev-public_tests/scratch/runtimes/tpch/expected_output_27.csv",
+      "memory_limit_mb": 64
+    },
+    {
+      "execution_name": "SELECT l_extendedprice, '' FROM lineitem WHERE l_returnflag = 'R' AND l_linestatus = 'F' ORDER BY l_extendedprice DESC, l_orderkey, l_linenumber;",
+      "disabled": false,
+      "sort_before_check": false,
+      "query": {
+        "root": {
+          "Project": {
+            "column_name_map": [
+              [
+                "l_extendedprice",
+                "l_extendedprice"
+              ]
+            ],
+            "underlying": {
+              "Sort": {
+                "sort_specs": [
+                  {
+                    "column_name": "l_extendedprice",
+                    "ascending": false
+                  },
+                  {
+                    "column_name": "l_orderkey",
+                    "ascending": true
+                  },
+                  {
+                    "column_name": "l_linenumber",
+                    "ascending": true
+                  }
+                ],
+                "underlying": {
+                  "Filter": {
+                    "predicates": [
+                      {
+                        "column_name": "l_returnflag",
+                        "operator": "EQ",
+                        "value": {
+                          "String": "R"
+                        }
+                      },
+                      {
+                        "column_name": "l_linestatus",
+                        "operator": "EQ",
+                        "value": {
+                          "String": "F"
+                        }
+                      }
+                    ],
+                    "underlying": {
+                      "Scan": {
+                        "table_id": "lineitem"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "expected_output_file": "/mnt/c/study/sem6/col362/noraceassignment/my-awesome-db-dev-public_tests/scratch/runtimes/tpch/expected_output_28.csv",
+      "memory_limit_mb": 64
+    },
+    {
+      "execution_name": "SELECT c_phone, '' FROM customer WHERE c_acctbal < 0.0 ORDER BY c_phone, c_custkey;",
+      "disabled": false,
+      "sort_before_check": false,
+      "query": {
+        "root": {
+          "Project": {
+            "column_name_map": [
+              [
+                "c_phone",
+                "c_phone"
+              ]
+            ],
+            "underlying": {
+              "Sort": {
+                "sort_specs": [
+                  {
+                    "column_name": "c_phone",
+                    "ascending": true
+                  },
+                  {
+                    "column_name": "c_custkey",
+                    "ascending": true
+                  }
+                ],
+                "underlying": {
+                  "Filter": {
+                    "predicates": [
+                      {
+                        "column_name": "c_acctbal",
+                        "operator": "LT",
+                        "value": {
+                          "F64": 0.0
+                        }
+                      }
+                    ],
+                    "underlying": {
+                      "Scan": {
+                        "table_id": "customer"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "expected_output_file": "/mnt/c/study/sem6/col362/noraceassignment/my-awesome-db-dev-public_tests/scratch/runtimes/tpch/expected_output_29.csv",
+      "memory_limit_mb": 64
+    },
+    {
+      "execution_name": "SELECT p_mfgr, '' FROM part WHERE p_type = 'BRASS' ORDER BY p_mfgr, p_partkey;",
+      "disabled": false,
+      "sort_before_check": false,
+      "query": {
+        "root": {
+          "Project": {
+            "column_name_map": [
+              [
+                "p_mfgr",
+                "p_mfgr"
+              ]
+            ],
+            "underlying": {
+              "Sort": {
+                "sort_specs": [
+                  {
+                    "column_name": "p_mfgr",
+                    "ascending": true
+                  },
+                  {
+                    "column_name": "p_partkey",
+                    "ascending": true
+                  }
+                ],
+                "underlying": {
+                  "Filter": {
+                    "predicates": [
+                      {
+                        "column_name": "p_type",
+                        "operator": "EQ",
+                        "value": {
+                          "String": "BRASS"
+                        }
+                      }
+                    ],
+                    "underlying": {
+                      "Scan": {
+                        "table_id": "part"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "expected_output_file": "/mnt/c/study/sem6/col362/noraceassignment/my-awesome-db-dev-public_tests/scratch/runtimes/tpch/expected_output_30.csv",
+      "memory_limit_mb": 64
+    },
+    {
+      "execution_name": "SELECT n_name, r_name, '' FROM nation, region;",
+      "disabled": false,
+      "sort_before_check": true,
+      "query": {
+        "root": {
+          "Project": {
+            "column_name_map": [
+              [
+                "n_name",
+                "n_name"
+              ],
+              [
+                "r_name",
+                "r_name"
+              ]
+            ],
+            "underlying": {
+              "Cross": {
+                "left": {
+                  "Scan": {
+                    "table_id": "nation"
+                  }
+                },
+                "right": {
+                  "Scan": {
+                    "table_id": "region"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "expected_output_file": "/mnt/c/study/sem6/col362/noraceassignment/my-awesome-db-dev-public_tests/scratch/runtimes/tpch/expected_output_31.csv",
+      "memory_limit_mb": 64
+    },
+    {
+      "execution_name": "SELECT s_name, r_name, '' FROM supplier, region;",
+      "disabled": false,
+      "sort_before_check": true,
+      "query": {
+        "root": {
+          "Project": {
+            "column_name_map": [
+              [
+                "s_name",
+                "s_name"
+              ],
+              [
+                "r_name",
+                "r_name"
+              ]
+            ],
+            "underlying": {
+              "Cross": {
+                "left": {
+                  "Scan": {
+                    "table_id": "supplier"
+                  }
+                },
+                "right": {
+                  "Scan": {
+                    "table_id": "region"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "expected_output_file": "/mnt/c/study/sem6/col362/noraceassignment/my-awesome-db-dev-public_tests/scratch/runtimes/tpch/expected_output_32.csv",
+      "memory_limit_mb": 64
+    },
+    {
+      "execution_name": "SELECT c_name, n_name, '' FROM\n  (SELECT c_name, c_custkey FROM customer WHERE c_custkey = 1) c,\n  nation;",
+      "disabled": false,
+      "sort_before_check": true,
+      "query": {
+        "root": {
+          "Project": {
+            "column_name_map": [
+              [
+                "c_name",
+                "c_name"
+              ],
+              [
+                "n_name",
+                "n_name"
+              ]
+            ],
+            "underlying": {
+              "Cross": {
+                "left": {
+                  "Filter": {
+                    "predicates": [
+                      {
+                        "column_name": "c_custkey",
+                        "operator": "EQ",
+                        "value": {
+                          "I32": 1
+                        }
+                      }
+                    ],
+                    "underlying": {
+                      "Scan": {
+                        "table_id": "customer"
+                      }
+                    }
+                  }
+                },
+                "right": {
+                  "Scan": {
+                    "table_id": "nation"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "expected_output_file": "/mnt/c/study/sem6/col362/noraceassignment/my-awesome-db-dev-public_tests/scratch/runtimes/tpch/expected_output_33.csv",
+      "memory_limit_mb": 64
+    },
+    {
+      "execution_name": "SELECT p_name, ps_availqty, '' FROM\n  (SELECT p_name, p_partkey FROM part WHERE p_partkey = 10) p,\n  (SELECT ps_availqty, ps_suppkey FROM partsupp WHERE ps_suppkey = 100) ps;",
+      "disabled": false,
+      "sort_before_check": true,
+      "query": {
+        "root": {
+          "Project": {
+            "column_name_map": [
+              [
+                "p_name",
+                "p_name"
+              ],
+              [
+                "ps_availqty",
+                "ps_availqty"
+              ]
+            ],
+            "underlying": {
+              "Cross": {
+                "left": {
+                  "Filter": {
+                    "predicates": [
+                      {
+                        "column_name": "p_partkey",
+                        "operator": "EQ",
+                        "value": {
+                          "I32": 10
+                        }
+                      }
+                    ],
+                    "underlying": {
+                      "Scan": {
+                        "table_id": "part"
+                      }
+                    }
+                  }
+                },
+                "right": {
+                  "Filter": {
+                    "predicates": [
+                      {
+                        "column_name": "ps_suppkey",
+                        "operator": "EQ",
+                        "value": {
+                          "I32": 100
+                        }
+                      }
+                    ],
+                    "underlying": {
+                      "Scan": {
+                        "table_id": "partsupp"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "expected_output_file": "/mnt/c/study/sem6/col362/noraceassignment/my-awesome-db-dev-public_tests/scratch/runtimes/tpch/expected_output_34.csv",
+      "memory_limit_mb": 64
+    },
+    {
+      "execution_name": "SELECT o_orderkey, l_linenumber, '' FROM\n  (SELECT o_orderkey FROM orders WHERE o_orderkey = 5) o,\n  (SELECT l_linenumber, l_orderkey FROM lineitem WHERE l_orderkey = 5) l;",
+      "disabled": false,
+      "sort_before_check": true,
+      "query": {
+        "root": {
+          "Project": {
+            "column_name_map": [
+              [
+                "o_orderkey",
+                "o_orderkey"
+              ],
+              [
+                "l_linenumber",
+                "l_linenumber"
+              ]
+            ],
+            "underlying": {
+              "Cross": {
+                "left": {
+                  "Filter": {
+                    "predicates": [
+                      {
+                        "column_name": "o_orderkey",
+                        "operator": "EQ",
+                        "value": {
+                          "I32": 5
+                        }
+                      }
+                    ],
+                    "underlying": {
+                      "Scan": {
+                        "table_id": "orders"
+                      }
+                    }
+                  }
+                },
+                "right": {
+                  "Filter": {
+                    "predicates": [
+                      {
+                        "column_name": "l_orderkey",
+                        "operator": "EQ",
+                        "value": {
+                          "I32": 5
+                        }
+                      }
+                    ],
+                    "underlying": {
+                      "Scan": {
+                        "table_id": "lineitem"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "expected_output_file": "/mnt/c/study/sem6/col362/noraceassignment/my-awesome-db-dev-public_tests/scratch/runtimes/tpch/expected_output_35.csv",
+      "memory_limit_mb": 64
+    },
+    {
+      "execution_name": "SELECT n_name, r_name, '' FROM nation, region WHERE n_regionkey = r_regionkey;",
+      "disabled": false,
+      "sort_before_check": true,
+      "query": {
+        "root": {
+          "Project": {
+            "column_name_map": [
+              [
+                "n_name",
+                "n_name"
+              ],
+              [
+                "r_name",
+                "r_name"
+              ]
+            ],
+            "underlying": {
+              "Filter": {
+                "predicates": [
+                  {
+                    "column_name": "n_regionkey",
+                    "operator": "EQ",
+                    "value": {
+                      "Column": "r_regionkey"
+                    }
+                  }
+                ],
+                "underlying": {
+                  "Cross": {
+                    "left": {
+                      "Scan": {
+                        "table_id": "nation"
+                      }
+                    },
+                    "right": {
+                      "Scan": {
+                        "table_id": "region"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "expected_output_file": "/mnt/c/study/sem6/col362/noraceassignment/my-awesome-db-dev-public_tests/scratch/runtimes/tpch/expected_output_36.csv",
+      "memory_limit_mb": 64
+    },
+    {
+      "execution_name": "SELECT c_name, n_name, '' FROM customer, nation WHERE c_nationkey = n_nationkey;",
+      "disabled": false,
+      "sort_before_check": true,
+      "query": {
+        "root": {
+          "Project": {
+            "column_name_map": [
+              [
+                "c_name",
+                "c_name"
+              ],
+              [
+                "n_name",
+                "n_name"
+              ]
+            ],
+            "underlying": {
+              "Filter": {
+                "predicates": [
+                  {
+                    "column_name": "c_nationkey",
+                    "operator": "EQ",
+                    "value": {
+                      "Column": "n_nationkey"
+                    }
+                  }
+                ],
+                "underlying": {
+                  "Cross": {
+                    "left": {
+                      "Scan": {
+                        "table_id": "customer"
+                      }
+                    },
+                    "right": {
+                      "Scan": {
+                        "table_id": "nation"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "expected_output_file": "/mnt/c/study/sem6/col362/noraceassignment/my-awesome-db-dev-public_tests/scratch/runtimes/tpch/expected_output_37.csv",
+      "memory_limit_mb": 64
+    },
+    {
+      "execution_name": "SELECT s_name, n_name, '' FROM supplier, nation WHERE s_nationkey = n_nationkey;",
+      "disabled": false,
+      "sort_before_check": true,
+      "query": {
+        "root": {
+          "Project": {
+            "column_name_map": [
+              [
+                "s_name",
+                "s_name"
+              ],
+              [
+                "n_name",
+                "n_name"
+              ]
+            ],
+            "underlying": {
+              "Filter": {
+                "predicates": [
+                  {
+                    "column_name": "s_nationkey",
+                    "operator": "EQ",
+                    "value": {
+                      "Column": "n_nationkey"
+                    }
+                  }
+                ],
+                "underlying": {
+                  "Cross": {
+                    "left": {
+                      "Scan": {
+                        "table_id": "supplier"
+                      }
+                    },
+                    "right": {
+                      "Scan": {
+                        "table_id": "nation"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "expected_output_file": "/mnt/c/study/sem6/col362/noraceassignment/my-awesome-db-dev-public_tests/scratch/runtimes/tpch/expected_output_38.csv",
+      "memory_limit_mb": 64
+    },
+    {
+      "execution_name": "SELECT p_name, ps_availqty, '' FROM part, partsupp WHERE p_partkey = ps_partkey;",
+      "disabled": false,
+      "sort_before_check": true,
+      "query": {
+        "root": {
+          "Project": {
+            "column_name_map": [
+              [
+                "p_name",
+                "p_name"
+              ],
+              [
+                "ps_availqty",
+                "ps_availqty"
+              ]
+            ],
+            "underlying": {
+              "Filter": {
+                "predicates": [
+                  {
+                    "column_name": "p_partkey",
+                    "operator": "EQ",
+                    "value": {
+                      "Column": "ps_partkey"
+                    }
+                  }
+                ],
+                "underlying": {
+                  "Cross": {
+                    "left": {
+                      "Scan": {
+                        "table_id": "part"
+                      }
+                    },
+                    "right": {
+                      "Scan": {
+                        "table_id": "partsupp"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "expected_output_file": "/mnt/c/study/sem6/col362/noraceassignment/my-awesome-db-dev-public_tests/scratch/runtimes/tpch/expected_output_39.csv",
+      "memory_limit_mb": 64
+    },
+    {
+      "execution_name": "SELECT s_name, ps_availqty, '' FROM supplier, partsupp WHERE s_suppkey = ps_suppkey;",
+      "disabled": false,
+      "sort_before_check": true,
+      "query": {
+        "root": {
+          "Project": {
+            "column_name_map": [
+              [
+                "s_name",
+                "s_name"
+              ],
+              [
+                "ps_availqty",
+                "ps_availqty"
+              ]
+            ],
+            "underlying": {
+              "Filter": {
+                "predicates": [
+                  {
+                    "column_name": "s_suppkey",
+                    "operator": "EQ",
+                    "value": {
+                      "Column": "ps_suppkey"
+                    }
+                  }
+                ],
+                "underlying": {
+                  "Cross": {
+                    "left": {
+                      "Scan": {
+                        "table_id": "supplier"
+                      }
+                    },
+                    "right": {
+                      "Scan": {
+                        "table_id": "partsupp"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "expected_output_file": "/mnt/c/study/sem6/col362/noraceassignment/my-awesome-db-dev-public_tests/scratch/runtimes/tpch/expected_output_40.csv",
+      "memory_limit_mb": 64
+    },
+    {
+      "execution_name": "SELECT c_name, o_totalprice, '' FROM customer, orders WHERE c_custkey = o_custkey AND c_mktsegment = 'MACHINERY' ORDER BY o_totalprice DESC, c_custkey, o_orderkey;",
+      "disabled": false,
+      "sort_before_check": false,
+      "query": {
+        "root": {
+          "Project": {
+            "column_name_map": [
+              [
+                "c_name",
+                "c_name"
+              ],
+              [
+                "o_totalprice",
+                "o_totalprice"
+              ]
+            ],
+            "underlying": {
+              "Sort": {
+                "sort_specs": [
+                  {
+                    "column_name": "o_totalprice",
+                    "ascending": false
+                  },
+                  {
+                    "column_name": "c_custkey",
+                    "ascending": true
+                  },
+                  {
+                    "column_name": "o_orderkey",
+                    "ascending": true
+                  }
+                ],
+                "underlying": {
+                  "Filter": {
+                    "predicates": [
+                      {
+                        "column_name": "c_custkey",
+                        "operator": "EQ",
+                        "value": {
+                          "Column": "o_custkey"
+                        }
+                      },
+                      {
+                        "column_name": "c_mktsegment",
+                        "operator": "EQ",
+                        "value": {
+                          "String": "MACHINERY"
+                        }
+                      }
+                    ],
+                    "underlying": {
+                      "Cross": {
+                        "left": {
+                          "Scan": {
+                            "table_id": "customer"
+                          }
+                        },
+                        "right": {
+                          "Scan": {
+                            "table_id": "orders"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "expected_output_file": "/mnt/c/study/sem6/col362/noraceassignment/my-awesome-db-dev-public_tests/scratch/runtimes/tpch/expected_output_41.csv",
+      "memory_limit_mb": 64
+    },
+    {
+      "execution_name": "SELECT o_orderdate, l_quantity, '' FROM orders, lineitem WHERE o_orderkey = l_orderkey AND o_orderstatus = 'P' ORDER BY o_orderdate, l_orderkey, l_linenumber;",
+      "disabled": false,
+      "sort_before_check": false,
+      "query": {
+        "root": {
+          "Project": {
+            "column_name_map": [
+              [
+                "o_orderdate",
+                "o_orderdate"
+              ],
+              [
+                "l_quantity",
+                "l_quantity"
+              ]
+            ],
+            "underlying": {
+              "Sort": {
+                "sort_specs": [
+                  {
+                    "column_name": "o_orderdate",
+                    "ascending": true
+                  },
+                  {
+                    "column_name": "l_orderkey",
+                    "ascending": true
+                  },
+                  {
+                    "column_name": "l_linenumber",
+                    "ascending": true
+                  }
+                ],
+                "underlying": {
+                  "Filter": {
+                    "predicates": [
+                      {
+                        "column_name": "o_orderkey",
+                        "operator": "EQ",
+                        "value": {
+                          "Column": "l_orderkey"
+                        }
+                      },
+                      {
+                        "column_name": "o_orderstatus",
+                        "operator": "EQ",
+                        "value": {
+                          "String": "P"
+                        }
+                      }
+                    ],
+                    "underlying": {
+                      "Cross": {
+                        "left": {
+                          "Scan": {
+                            "table_id": "orders"
+                          }
+                        },
+                        "right": {
+                          "Scan": {
+                            "table_id": "lineitem"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "expected_output_file": "/mnt/c/study/sem6/col362/noraceassignment/my-awesome-db-dev-public_tests/scratch/runtimes/tpch/expected_output_42.csv",
+      "memory_limit_mb": 64
+    },
+    {
+      "execution_name": "SELECT n_name, r_name, '' FROM nation, region WHERE n_regionkey = r_regionkey AND r_name = 'EUROPE' ORDER BY n_name, n_nationkey;",
+      "disabled": false,
+      "sort_before_check": false,
+      "query": {
+        "root": {
+          "Project": {
+            "column_name_map": [
+              [
+                "n_name",
+                "n_name"
+              ],
+              [
+                "r_name",
+                "r_name"
+              ]
+            ],
+            "underlying": {
+              "Sort": {
+                "sort_specs": [
+                  {
+                    "column_name": "n_name",
+                    "ascending": true
+                  },
+                  {
+                    "column_name": "n_nationkey",
+                    "ascending": true
+                  }
+                ],
+                "underlying": {
+                  "Filter": {
+                    "predicates": [
+                      {
+                        "column_name": "n_regionkey",
+                        "operator": "EQ",
+                        "value": {
+                          "Column": "r_regionkey"
+                        }
+                      },
+                      {
+                        "column_name": "r_name",
+                        "operator": "EQ",
+                        "value": {
+                          "String": "EUROPE"
+                        }
+                      }
+                    ],
+                    "underlying": {
+                      "Cross": {
+                        "left": {
+                          "Scan": {
+                            "table_id": "nation"
+                          }
+                        },
+                        "right": {
+                          "Scan": {
+                            "table_id": "region"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "expected_output_file": "/mnt/c/study/sem6/col362/noraceassignment/my-awesome-db-dev-public_tests/scratch/runtimes/tpch/expected_output_43.csv",
+      "memory_limit_mb": 64
+    },
+    {
+      "execution_name": "SELECT s_name, n_name, '' FROM supplier, nation WHERE s_nationkey = n_nationkey AND s_acctbal > 1000.0 ORDER BY s_acctbal DESC, s_suppkey;",
+      "disabled": false,
+      "sort_before_check": false,
+      "query": {
+        "root": {
+          "Project": {
+            "column_name_map": [
+              [
+                "s_name",
+                "s_name"
+              ],
+              [
+                "n_name",
+                "n_name"
+              ]
+            ],
+            "underlying": {
+              "Sort": {
+                "sort_specs": [
+                  {
+                    "column_name": "s_acctbal",
+                    "ascending": false
+                  },
+                  {
+                    "column_name": "s_suppkey",
+                    "ascending": true
+                  }
+                ],
+                "underlying": {
+                  "Filter": {
+                    "predicates": [
+                      {
+                        "column_name": "s_nationkey",
+                        "operator": "EQ",
+                        "value": {
+                          "Column": "n_nationkey"
+                        }
+                      },
+                      {
+                        "column_name": "s_acctbal",
+                        "operator": "GT",
+                        "value": {
+                          "F64": 1000.0
+                        }
+                      }
+                    ],
+                    "underlying": {
+                      "Cross": {
+                        "left": {
+                          "Scan": {
+                            "table_id": "supplier"
+                          }
+                        },
+                        "right": {
+                          "Scan": {
+                            "table_id": "nation"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "expected_output_file": "/mnt/c/study/sem6/col362/noraceassignment/my-awesome-db-dev-public_tests/scratch/runtimes/tpch/expected_output_44.csv",
+      "memory_limit_mb": 64
+    },
+    {
+      "execution_name": "SELECT p_name, ps_supplycost, '' FROM part, partsupp WHERE p_partkey = ps_partkey AND p_size = 50 ORDER BY ps_supplycost DESC, p_partkey, ps_suppkey;",
+      "disabled": false,
+      "sort_before_check": false,
+      "query": {
+        "root": {
+          "Project": {
+            "column_name_map": [
+              [
+                "p_name",
+                "p_name"
+              ],
+              [
+                "ps_supplycost",
+                "ps_supplycost"
+              ]
+            ],
+            "underlying": {
+              "Sort": {
+                "sort_specs": [
+                  {
+                    "column_name": "ps_supplycost",
+                    "ascending": false
+                  },
+                  {
+                    "column_name": "p_partkey",
+                    "ascending": true
+                  },
+                  {
+                    "column_name": "ps_suppkey",
+                    "ascending": true
+                  }
+                ],
+                "underlying": {
+                  "Filter": {
+                    "predicates": [
+                      {
+                        "column_name": "p_partkey",
+                        "operator": "EQ",
+                        "value": {
+                          "Column": "ps_partkey"
+                        }
+                      },
+                      {
+                        "column_name": "p_size",
+                        "operator": "EQ",
+                        "value": {
+                          "I32": 50
+                        }
+                      }
+                    ],
+                    "underlying": {
+                      "Cross": {
+                        "left": {
+                          "Scan": {
+                            "table_id": "part"
+                          }
+                        },
+                        "right": {
+                          "Scan": {
+                            "table_id": "partsupp"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "expected_output_file": "/mnt/c/study/sem6/col362/noraceassignment/my-awesome-db-dev-public_tests/scratch/runtimes/tpch/expected_output_45.csv",
+      "memory_limit_mb": 64
+    },
+    {
+      "execution_name": "SELECT c_name, n_name, '' FROM customer, nation, region WHERE c_nationkey = n_nationkey AND n_regionkey = r_regionkey AND r_name = 'ASIA' ORDER BY c_name, c_custkey;",
+      "disabled": false,
+      "sort_before_check": false,
+      "query": {
+        "root": {
+          "Project": {
+            "column_name_map": [
+              [
+                "c_name",
+                "c_name"
+              ],
+              [
+                "n_name",
+                "n_name"
+              ]
+            ],
+            "underlying": {
+              "Sort": {
+                "sort_specs": [
+                  {
+                    "column_name": "c_name",
+                    "ascending": true
+                  },
+                  {
+                    "column_name": "c_custkey",
+                    "ascending": true
+                  }
+                ],
+                "underlying": {
+                  "Filter": {
+                    "predicates": [
+                      {
+                        "column_name": "c_nationkey",
+                        "operator": "EQ",
+                        "value": {
+                          "Column": "n_nationkey"
+                        }
+                      },
+                      {
+                        "column_name": "n_regionkey",
+                        "operator": "EQ",
+                        "value": {
+                          "Column": "r_regionkey"
+                        }
+                      },
+                      {
+                        "column_name": "r_name",
+                        "operator": "EQ",
+                        "value": {
+                          "String": "ASIA"
+                        }
+                      }
+                    ],
+                    "underlying": {
+                      "Cross": {
+                        "left": {
+                          "Cross": {
+                            "left": {
+                              "Scan": {
+                                "table_id": "customer"
+                              }
+                            },
+                            "right": {
+                              "Scan": {
+                                "table_id": "nation"
+                              }
+                            }
+                          }
+                        },
+                        "right": {
+                          "Scan": {
+                            "table_id": "region"
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "expected_output_file": "/mnt/c/study/sem6/col362/noraceassignment/my-awesome-db-dev-public_tests/scratch/runtimes/tpch/expected_output_46.csv",
+      "memory_limit_mb": 64
+    },
