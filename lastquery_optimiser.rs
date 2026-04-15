@@ -3,11 +3,11 @@
 // Optimisations applied bottom-up:
 //   1. Scalar predicate push-down into Cross children
 //   2. Equality join detection → HashJoin
-//   3. RECURSIVE fuse: Filter over nested Cross trees gets fully distributed
-//   4. Join reordering: smaller side is always the build side
-//   5. NEW: Filter(Scan) → FilteredScan  (evaluate predicates inside scan loop)
-//   6. NEW: Project pushed below Sort when sort keys survive projection,
-//           so scratch data carries only projected columns
+//   3. RECURSIVE fuse: Filter over nested Cross trees gets fully distributed,
+//      so Cross(Cross(A,B),C) with predicates spanning all three tables
+//      produces a proper join tree instead of a cartesian product.
+//   4. Join reordering: after building the join tree, reorder children so
+//      the smaller (row_count) side is always the build side.
 
 use common::query::*;
 
@@ -55,24 +55,9 @@ pub struct OptSortData {
     pub underlying: Box<OptQueryOp>,
 }
 
-/// Scan with inline filter predicates and optional inline projection.
-/// Predicates are evaluated immediately after decoding each row.
-/// If `project` is Some, only those columns are emitted (in that order).
-/// This eliminates scratch-disk writes for rejected / unreferenced columns.
-#[derive(Debug, Clone)]
-pub struct FilteredScanData {
-    pub table_id:   String,
-    /// Predicates applied inline (all scalar, evaluated as AND).
-    pub predicates: Vec<Predicate>,
-    /// If Some: the projection applied after filtering.
-    /// Vec of (original_col_name, output_col_name).
-    pub project:    Option<Vec<(String, String)>>,
-}
-
 #[derive(Debug, Clone)]
 pub enum OptQueryOp {
     Scan(ScanData),
-    FilteredScan(FilteredScanData),
     Filter(OptFilterData),
     Project(OptProjectData),
     Cross(OptCrossData),
@@ -86,12 +71,11 @@ pub enum OptQueryOp {
 // ─────────────────────────────────────────────────────────────────────────────
 
 pub fn optimise(op: QueryOp) -> OptQueryOp {
-    let lowered = lower(op);
-    fuse_operators(lowered)
+    lower(op)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Pass 1: lower QueryOp → OptQueryOp (join optimisation unchanged)
+// Lower QueryOp → OptQueryOp
 // ─────────────────────────────────────────────────────────────────────────────
 
 fn lower(op: QueryOp) -> OptQueryOp {
@@ -127,132 +111,7 @@ fn lower(op: QueryOp) -> OptQueryOp {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Pass 2: structural fusions (bottom-up, applied after join optimisation)
-// ─────────────────────────────────────────────────────────────────────────────
-
-fn fuse_operators(op: OptQueryOp) -> OptQueryOp {
-    match op {
-        // Recurse first (bottom-up).
-        OptQueryOp::Sort(OptSortData { sort_specs, underlying }) => {
-            let child = fuse_operators(*underlying);
-            fuse_sort(sort_specs, child)
-        }
-        OptQueryOp::Project(OptProjectData { column_name_map, underlying }) => {
-            let child = fuse_operators(*underlying);
-            fuse_project(column_name_map, child)
-        }
-        OptQueryOp::Filter(OptFilterData { predicates, underlying }) => {
-            let child = fuse_operators(*underlying);
-            fuse_filter(predicates, child)
-        }
-        OptQueryOp::HashJoin(d) => OptQueryOp::HashJoin(HashJoinData {
-            left:  Box::new(fuse_operators(*d.left)),
-            right: Box::new(fuse_operators(*d.right)),
-            ..d
-        }),
-        OptQueryOp::FilterCross(d) => OptQueryOp::FilterCross(FilterCrossData {
-            left:  Box::new(fuse_operators(*d.left)),
-            right: Box::new(fuse_operators(*d.right)),
-            ..d
-        }),
-        OptQueryOp::Cross(d) => OptQueryOp::Cross(OptCrossData {
-            left:  Box::new(fuse_operators(*d.left)),
-            right: Box::new(fuse_operators(*d.right)),
-        }),
-        // Leaf nodes.
-        other => other,
-    }
-}
-
-/// Try to fuse Filter into an underlying Scan → FilteredScan.
-/// If the child is not a Scan (or FilteredScan), leave as Filter.
-fn fuse_filter(predicates: Vec<Predicate>, child: OptQueryOp) -> OptQueryOp {
-    match child {
-        OptQueryOp::Scan(ScanData { table_id }) => {
-            eprintln!("[OPT] Filter(Scan({})) → FilteredScan", table_id);
-            OptQueryOp::FilteredScan(FilteredScanData {
-                table_id,
-                predicates,
-                project: None,
-            })
-        }
-        OptQueryOp::FilteredScan(mut fs) => {
-            // Accumulate more predicates into an existing FilteredScan.
-            fs.predicates.extend(predicates);
-            OptQueryOp::FilteredScan(fs)
-        }
-        other => OptQueryOp::Filter(OptFilterData {
-            predicates,
-            underlying: Box::new(other),
-        }),
-    }
-}
-
-/// Try to fuse Project into an underlying FilteredScan.
-/// If the child is a FilteredScan with no existing project, attach the project.
-fn fuse_project(map: Vec<(String, String)>, child: OptQueryOp) -> OptQueryOp {
-    match child {
-        OptQueryOp::FilteredScan(mut fs) if fs.project.is_none() => {
-            eprintln!("[OPT] Project(FilteredScan({})) → FilteredScan+project", fs.table_id);
-            fs.project = Some(map);
-            OptQueryOp::FilteredScan(fs)
-        }
-        other => OptQueryOp::Project(OptProjectData {
-            column_name_map: map,
-            underlying: Box::new(other),
-        }),
-    }
-}
-
-/// Try to push a project below a sort.
-/// Condition: all sort key column names appear in the project output.
-/// If yes: Sort(Project(child)) → Project(Sort(child))  [project after sort]
-/// but we actually want project BEFORE sort on disk, so we do:
-///   Sort(Project(child)) stays as Sort(Project(child)) — the project is
-///   already fused into FilteredScan by fuse_project.
-/// What we actually do here:
-///   If the sort's child is a Project whose child is a FilteredScan,
-///   we push the project into the FilteredScan so the sort operates on
-///   already-projected (smaller) rows.
-fn fuse_sort(specs: Vec<SortSpec>, child: OptQueryOp) -> OptQueryOp {
-    match child {
-        // Sort(Project(FilteredScan)) — try to push project into FilteredScan
-        // so that sort rows are small, provided all sort keys survive.
-        OptQueryOp::Project(OptProjectData { ref column_name_map, ref underlying })
-            if matches!(**underlying, OptQueryOp::FilteredScan(_)) =>
-        {
-            let all_sort_keys_survive = specs.iter().all(|s| {
-                column_name_map.iter().any(|(_, to)| {
-                    to == &s.column_name
-                        || to.ends_with(&format!(".{}", s.column_name))
-                        || s.column_name.ends_with(&format!(".{}", to))
-                        || s.column_name == *to
-                })
-            });
-
-            if all_sort_keys_survive {
-                if let OptQueryOp::Project(OptProjectData { column_name_map, underlying }) = child {
-                    // Push project into FilteredScan
-                    let fused_child = fuse_project(column_name_map, *underlying);
-                    eprintln!("[OPT] Sort(Project(FilteredScan)) → Sort(FilteredScan+project)");
-                    return OptQueryOp::Sort(OptSortData {
-                        sort_specs: specs,
-                        underlying: Box::new(fused_child),
-                    });
-                }
-            }
-            // Fall through: can't fuse, keep as-is
-            OptQueryOp::Sort(OptSortData { sort_specs: specs, underlying: Box::new(child) })
-        }
-        other => OptQueryOp::Sort(OptSortData {
-            sort_specs: specs,
-            underlying: Box::new(other),
-        }),
-    }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// push_filter_into (unchanged from original — join optimisation)
+// push_filter_into
 // ─────────────────────────────────────────────────────────────────────────────
 
 fn push_filter_into(predicates: Vec<Predicate>, child: OptQueryOp) -> OptQueryOp {
@@ -273,17 +132,35 @@ fn push_filter_into(predicates: Vec<Predicate>, child: OptQueryOp) -> OptQueryOp
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// fuse_filter_cross — recursive core optimisation
+//
+// Given predicates and Cross(left, right):
+//   1. Split predicates: left-only scalars, right-only scalars, join preds
+//   2. Recursively push scalars into children
+//   3. Try to push join preds further into subtrees
+//   4. Use remaining join_preds to build HashJoin or FilterCross
+//
+// Key fix: we collect ALL leaves of nested Cross trees and try to optimally
+// assign all predicates, producing a bushy join tree instead of always
+// doing Cross(something_huge, table).
+// ─────────────────────────────────────────────────────────────────────────────
+
 fn fuse_filter_cross(
     predicates: Vec<Predicate>,
     left:  Box<OptQueryOp>,
     right: Box<OptQueryOp>,
 ) -> OptQueryOp {
+    // Collect all leaf tables from the Cross tree
     let mut leaves = Vec::new();
     collect_cross_leaves(*left, &mut leaves);
     collect_cross_leaves(*right, &mut leaves);
+
+    // Try to build an optimal join tree from all leaves + all predicates
     build_optimal_join(leaves, predicates)
 }
 
+/// Flatten a Cross tree into its leaf nodes (already optimised subtrees).
 fn collect_cross_leaves(op: OptQueryOp, out: &mut Vec<OptQueryOp>) {
     match op {
         OptQueryOp::Cross(OptCrossData { left, right }) => {
@@ -294,6 +171,9 @@ fn collect_cross_leaves(op: OptQueryOp, out: &mut Vec<OptQueryOp>) {
     }
 }
 
+/// Build an optimal left-deep join tree from a set of relations and predicates.
+/// Uses a greedy approach: repeatedly pick the predicate whose both sides are
+/// available and whose build side is smallest.
 fn build_optimal_join(mut relations: Vec<OptQueryOp>, mut predicates: Vec<Predicate>) -> OptQueryOp {
     if relations.is_empty() {
         panic!("build_optimal_join: no relations");
@@ -310,11 +190,13 @@ fn build_optimal_join(mut relations: Vec<OptQueryOp>, mut predicates: Vec<Predic
         };
     }
 
+    // First: push scalar (single-table) predicates into the matching relation
     let mut leftover_preds: Vec<Predicate> = Vec::new();
     for pred in predicates.drain(..) {
         match &pred.value {
             ComparisionValue::Column(_) => leftover_preds.push(pred),
             _ => {
+                // scalar: find which relation owns this column
                 let mut pushed = false;
                 for rel in &mut relations {
                     if tree_has_col(rel, &pred.column_name) {
@@ -329,12 +211,23 @@ fn build_optimal_join(mut relations: Vec<OptQueryOp>, mut predicates: Vec<Predic
     }
     predicates = leftover_preds;
 
+    // Greedy join ordering: build a left-deep tree
+    // Start with the smallest relation, repeatedly join the next best
+    // relation using available predicates.
+    //
+    // "Best" means: there's an eq-join predicate connecting it to the
+    // current result; otherwise pick smallest.
+
+    // Sort relations by estimated size (scans are ordered by table name heuristic)
+    // We don't have row counts at optimise time, so use a table-size heuristic.
     relations.sort_by_key(|r| estimated_rows(r));
 
     let mut current = relations.remove(0);
     let mut remaining = relations;
 
     while !remaining.is_empty() {
+        // Find the best next relation to join
+        // Priority: one that has a join predicate with current
         let mut best_idx = None;
         let mut best_has_join = false;
 
@@ -356,6 +249,7 @@ fn build_optimal_join(mut relations: Vec<OptQueryOp>, mut predicates: Vec<Predic
         let idx = best_idx.unwrap();
         let next = remaining.remove(idx);
 
+        // Collect predicates that connect current ↔ next (or are fully inside either)
         let mut join_preds: Vec<Predicate> = Vec::new();
         let mut rest_preds: Vec<Predicate> = Vec::new();
         for pred in predicates.drain(..) {
@@ -364,12 +258,14 @@ fn build_optimal_join(mut relations: Vec<OptQueryOp>, mut predicates: Vec<Predic
                 let lhs_in_next = tree_has_col(&next,    &pred.column_name);
                 let rhs_in_cur  = tree_has_col(&current, rhs_col);
                 let rhs_in_next = tree_has_col(&next,    rhs_col);
+                // Pure join between current and next
                 if (lhs_in_cur && rhs_in_next) || (lhs_in_next && rhs_in_cur) {
                     join_preds.push(pred);
                 } else {
                     rest_preds.push(pred);
                 }
             } else {
+                // Scalar — should already be pushed in, but keep safe
                 rest_preds.push(pred);
             }
         }
@@ -378,6 +274,7 @@ fn build_optimal_join(mut relations: Vec<OptQueryOp>, mut predicates: Vec<Predic
         current = build_join_node(join_preds, Box::new(current), Box::new(next));
     }
 
+    // Apply any remaining predicates as a filter
     if !predicates.is_empty() {
         current = OptQueryOp::Filter(OptFilterData {
             predicates,
@@ -388,6 +285,7 @@ fn build_optimal_join(mut relations: Vec<OptQueryOp>, mut predicates: Vec<Predic
     current
 }
 
+/// Push a scalar predicate into a relation (wraps it in Filter, or adds to existing Filter).
 fn push_scalar_into_rel(rel: &mut OptQueryOp, pred: Predicate) {
     let old = std::mem::replace(rel, OptQueryOp::Scan(ScanData { table_id: String::new() }));
     *rel = match old {
@@ -402,18 +300,18 @@ fn push_scalar_into_rel(rel: &mut OptQueryOp, pred: Predicate) {
     };
 }
 
-pub fn estimated_rows(op: &OptQueryOp) -> u64 {
+/// Rough row-count estimate for join ordering (lower = build side).
+fn estimated_rows(op: &OptQueryOp) -> u64 {
     match op {
-        OptQueryOp::Scan(d)         => table_size_estimate(&d.table_id),
-        OptQueryOp::FilteredScan(d) => table_size_estimate(&d.table_id) / 4,
-        OptQueryOp::Filter(d)       => estimated_rows(&d.underlying) / 4,
-        OptQueryOp::Project(d)      => estimated_rows(&d.underlying),
-        OptQueryOp::Sort(d)         => estimated_rows(&d.underlying),
-        OptQueryOp::Cross(d)        =>
+        OptQueryOp::Scan(d) => table_size_estimate(&d.table_id),
+        OptQueryOp::Filter(d) => estimated_rows(&d.underlying) / 4,
+        OptQueryOp::Project(d) => estimated_rows(&d.underlying),
+        OptQueryOp::Sort(d) => estimated_rows(&d.underlying),
+        OptQueryOp::Cross(d) =>
             estimated_rows(&d.left).saturating_mul(estimated_rows(&d.right)),
-        OptQueryOp::FilterCross(d)  =>
+        OptQueryOp::FilterCross(d) =>
             estimated_rows(&d.left).saturating_mul(estimated_rows(&d.right)) / 10,
-        OptQueryOp::HashJoin(d)     =>
+        OptQueryOp::HashJoin(d) =>
             estimated_rows(&d.left).max(estimated_rows(&d.right)),
     }
 }
@@ -432,6 +330,29 @@ fn table_size_estimate(name: &str) -> u64 {
     }
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// partition_preds_for_subtree — kept for compatibility
+// ─────────────────────────────────────────────────────────────────────────────
+
+fn partition_preds_for_subtree(
+    preds: Vec<Predicate>,
+    subtree: &OptQueryOp,
+) -> (Vec<Predicate>, Vec<Predicate>) {
+    let mut keep = Vec::new();
+    let mut push = Vec::new();
+    for pred in preds {
+        let lhs_in = tree_has_col(subtree, &pred.column_name);
+        let rhs_in = match &pred.value {
+            ComparisionValue::Column(c) => tree_has_col(subtree, c),
+            _ => true,
+        };
+        if lhs_in && rhs_in { push.push(pred); } else { keep.push(pred); }
+    }
+    (keep, push)
+}
+
+/// Given join-level predicates and optimised left/right children,
+/// produce HashJoin, FilterCross, or Cross.
 fn build_join_node(
     join_preds: Vec<Predicate>,
     left:  Box<OptQueryOp>,
@@ -447,8 +368,8 @@ fn build_join_node(
     });
 
     if all_eq_col_col {
-        let mut left_keys:  Vec<String>    = Vec::new();
-        let mut right_keys: Vec<String>    = Vec::new();
+        let mut left_keys:  Vec<String> = Vec::new();
+        let mut right_keys: Vec<String> = Vec::new();
         let mut extra:      Vec<Predicate> = Vec::new();
 
         for pred in &join_preds {
@@ -469,9 +390,11 @@ fn build_join_node(
 
         if !left_keys.is_empty() {
             eprintln!("[OPT] → HashJoin on {:?} = {:?}", left_keys, right_keys);
+            // Put smaller (build) side on the left
             let left_est  = estimated_rows(&left);
             let right_est = estimated_rows(&right);
             if right_est < left_est {
+                // swap so smaller is left (build side in executor)
                 eprintln!("[OPT]   swapping sides: left_est={} right_est={}", left_est, right_est);
                 let mut swapped_lk = Vec::new();
                 let mut swapped_rk = Vec::new();
@@ -506,7 +429,7 @@ fn build_join_node(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Column presence check
+// Helper: does this subtree produce a column with this name?
 // ─────────────────────────────────────────────────────────────────────────────
 
 pub fn tree_has_col(op: &OptQueryOp, col: &str) -> bool {
@@ -514,15 +437,6 @@ pub fn tree_has_col(op: &OptQueryOp, col: &str) -> bool {
         OptQueryOp::Scan(d) => {
             col.starts_with(&format!("{}.", d.table_id))
                 || table_likely_has_col(&d.table_id, col)
-        }
-        OptQueryOp::FilteredScan(d) => {
-            // If projected, only projected output columns are visible.
-            if let Some(ref proj) = d.project {
-                proj.iter().any(|(_, to)| to == col)
-            } else {
-                col.starts_with(&format!("{}.", d.table_id))
-                    || table_likely_has_col(&d.table_id, col)
-            }
         }
         OptQueryOp::Filter(d)      => tree_has_col(&d.underlying, col),
         OptQueryOp::Project(d)     => d.column_name_map.iter().any(|(_, to)| to == col),
@@ -546,24 +460,4 @@ fn table_likely_has_col(table_id: &str, col: &str) -> bool {
         _           => return false,
     };
     col.starts_with(prefix)
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// get_output_columns — kept here for convenience (also used in giveoutput)
-// ─────────────────────────────────────────────────────────────────────────────
-
-pub fn get_output_columns_opt(op: &OptQueryOp) -> Option<Vec<String>> {
-    // Returns None if we can't statically determine columns.
-    match op {
-        OptQueryOp::Project(d) =>
-            Some(d.column_name_map.iter().map(|(_, to)| to.clone()).collect()),
-        OptQueryOp::FilteredScan(d) => {
-            if let Some(ref proj) = d.project {
-                Some(proj.iter().map(|(_, to)| to.clone()).collect())
-            } else {
-                None
-            }
-        }
-        _ => None,
-    }
 }

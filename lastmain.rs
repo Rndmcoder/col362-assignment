@@ -10,10 +10,12 @@ use crate::{
     io_setup::{setup_disk_io, setup_monitor_io},
 };
 use giveoutput::Executor;
+use query_optimiser::optimise;
 
 mod cli;
 mod io_setup;
 mod giveoutput;
+mod query_optimiser;
 
 fn db_main() -> Result<()> {
     let cli_options = CliOptions::parse();
@@ -42,18 +44,21 @@ fn db_main() -> Result<()> {
         .map_err(|e| anyhow::anyhow!("memory_limit: '{}': {}", line.trim(), e))?;
     eprintln!("[MAIN] memory_limit_mb={}", memory_limit_mb);
 
+    // Optimise
+    let opt_plan = optimise(query.root);
+    eprintln!("[MAIN] optimised plan={:#?}", opt_plan);
+
     let mut executor = Executor::new(disk_buf, &mut disk_out, &ctx)?;
     executor.set_memory_limit_mb(memory_limit_mb);
 
-    let result = executor.execute(&query.root)?;
+    let result = executor.execute(&opt_plan)?;
     eprintln!("[MAIN] result rows={}", result.row_count());
 
-    let output_columns = get_output_columns(&query.root, &ctx);
+    let output_columns = get_output_columns(&opt_plan, &ctx);
     eprintln!("[MAIN] output_columns={:?}", output_columns);
 
     monitor_out.write_all(b"validate\n")?;
 
-    // Stream result to monitor one row at a time — never load all rows at once.
     let bs = executor.block_size as usize;
     match result {
         RunSet::InMemory(rows) => {
@@ -62,18 +67,12 @@ fn db_main() -> Result<()> {
             }
         }
         RunSet::Spilled { runs, .. } => {
-            // We can't call executor methods here (monitor_out also borrowed),
-            // but we still have disk_out available through executor.
-            // Re-use the disk reader by streaming blocks manually.
-            // disk_in is inside executor; we need to stream via executor.
-            // Solution: collect the run descriptors, then stream.
             let descriptors: Vec<(u64, u64)> = runs.iter()
                 .map(|r| (r.start_block, r.num_blocks))
                 .collect();
             let mut row_idx = 0usize;
             for (start, n_blk) in descriptors {
                 for bi in 0..n_blk {
-                    // Read block via executor's disk handle
                     let buf = executor.read_block_pub(start + bi)?;
                     let b   = &buf[..];
                     let rc  = u16::from_le_bytes([b[bs-2], b[bs-1]]) as usize;
