@@ -1,16 +1,14 @@
+// main.rs
 use anyhow::{Context, Result};
 use clap::Parser;
 use common::query::Query;
 use db_config::DbContext;
 use std::io::{BufRead, BufReader, Write};
-use crate::giveoutput::{get_output_columns, RunSet};
 
-use crate::{
-    cli::CliOptions,
-    io_setup::{setup_disk_io, setup_monitor_io},
-};
+use crate::giveoutput::{get_output_columns, RunSet};
+use crate::{cli::CliOptions, io_setup::{setup_disk_io, setup_monitor_io}};
 use giveoutput::Executor;
-use query_optimiser::optimise;
+use query_optimiser::{optimise_with_ctx, OptContext};
 
 mod cli;
 mod io_setup;
@@ -19,23 +17,29 @@ mod query_optimiser;
 
 fn db_main() -> Result<()> {
     let cli_options = CliOptions::parse();
-    let ctx = DbContext::load_from_file(cli_options.get_config_path())?;
+
+    let ctx = DbContext::load_from_file(cli_options.get_config_path())
+        .context("Cannot load db_config.json — run the generator first")?;
+
     eprintln!("[MAIN] loaded {} tables", ctx.get_table_specs().len());
+    for table in ctx.get_table_specs() {
+        eprintln!("[MAIN] TABLE '{}' ({} cols)", table.name, table.column_specs.len());
+        for col in &table.column_specs {
+            eprintln!("  COL {} {:?}", col.column_name, col.data_type);
+        }
+    }
 
-    let (disk_in, mut disk_out) = setup_disk_io();
+    let (disk_in, mut disk_out)    = setup_disk_io();
     let (monitor_in, mut monitor_out) = setup_monitor_io();
-
     let mut disk_buf = BufReader::new(disk_in);
     let mut mon_buf  = BufReader::new(monitor_in);
 
-    // Read query
     let mut line = String::new();
     mon_buf.read_line(&mut line)?;
     let query: Query = serde_json::from_str(&line)
         .map_err(|e| anyhow::anyhow!("query parse: {}\nraw: {}", e, line.trim()))?;
     eprintln!("[MAIN] query={:#?}", query);
 
-    // Memory limit
     line.clear();
     monitor_out.write_all(b"get_memory_limit\n")?;
     monitor_out.flush()?;
@@ -44,9 +48,11 @@ fn db_main() -> Result<()> {
         .map_err(|e| anyhow::anyhow!("memory_limit: '{}': {}", line.trim(), e))?;
     eprintln!("[MAIN] memory_limit_mb={}", memory_limit_mb);
 
-    // Optimise
-    let opt_plan = optimise(query.root);
-    eprintln!("[MAIN] optimised plan={:#?}", opt_plan);
+    let mut opt_ctx = OptContext::new(&ctx);
+    opt_ctx.memory_budget_bytes = (memory_limit_mb as usize) * 1024 * 1024;
+
+    let opt_plan = optimise_with_ctx(query.root, &opt_ctx);
+    eprintln!("[MAIN] plan={:#?}", opt_plan);
 
     let mut executor = Executor::new(disk_buf, &mut disk_out, &ctx)?;
     executor.set_memory_limit_mb(memory_limit_mb);
@@ -67,13 +73,10 @@ fn db_main() -> Result<()> {
             }
         }
         RunSet::Spilled { runs, .. } => {
-            let descriptors: Vec<(u64, u64)> = runs.iter()
-                .map(|r| (r.start_block, r.num_blocks))
-                .collect();
             let mut row_idx = 0usize;
-            for (start, n_blk) in descriptors {
-                for bi in 0..n_blk {
-                    let buf = executor.read_block_pub(start + bi)?;
+            for run in &runs {
+                for bi in 0..run.num_blocks {
+                    let buf = executor.read_block_pub(run.start_block + bi)?;
                     let b   = &buf[..];
                     let rc  = u16::from_le_bytes([b[bs-2], b[bs-1]]) as usize;
                     let mut off = 0usize;
@@ -94,13 +97,10 @@ fn db_main() -> Result<()> {
     Ok(())
 }
 
-fn write_row<W: Write>(out: &mut W, cols: &[String], row: &giveoutput::Row, idx: usize)
-    -> Result<()>
-{
+fn write_row<W: Write>(out: &mut W, cols: &[String], row: &giveoutput::Row, idx: usize) -> Result<()> {
     let mut line = String::new();
     for col in cols {
-        let v = row.iter().find(|(k,_)| k == col)
-            .map(|(_,v)| v.as_str())
+        let v = row.iter().find(|(k, _)| k == col).map(|(_, v)| v.as_str())
             .unwrap_or_else(|| { eprintln!("[MAIN] row {} missing col '{}'", idx, col); "" });
         line.push_str(v);
         line.push('|');
@@ -111,5 +111,5 @@ fn write_row<W: Write>(out: &mut W, cols: &[String], row: &giveoutput::Row, idx:
 }
 
 fn main() -> Result<()> {
-    db_main().with_context(|| "From Monitor")
+    db_main().with_context(|| "database error")
 }
