@@ -505,26 +505,158 @@ pub fn grace_partition_count(
 // Public entry point
 // ─────────────────────────────────────────────────────────────────────────────
 
+/// [OPT-26] Column pruning: given the set of columns needed by the parent,
+/// push narrowing projections into HashJoin children to reduce row width.
+/// `needed` = None means "all columns needed" (top of tree).
+fn prune_columns_top_down(op: OptQueryOp, needed: Option<&[String]>) -> OptQueryOp {
+    match op {
+        OptQueryOp::Project(OptProjectData { column_name_map, underlying }) => {
+            let child_needed: Vec<String> = column_name_map.iter()
+                .map(|(from, _)| from.clone())
+                .collect();
+            let new_child = prune_columns_top_down(*underlying, Some(&child_needed));
+            OptQueryOp::Project(OptProjectData {
+                column_name_map,
+                underlying: Box::new(new_child),
+            })
+        }
+
+        OptQueryOp::Sort(OptSortData { sort_specs, underlying, is_physically_ordered }) => {
+            let sort_keys: Vec<String> = sort_specs.iter()
+                .map(|s| s.column_name.clone())
+                .collect();
+            let extended: Option<Vec<String>> = needed.map(|n| {
+                let mut v = n.to_vec();
+                for k in &sort_keys {
+                    if !v.contains(k) { v.push(k.clone()); }
+                }
+                v
+            });
+            let new_child = prune_columns_top_down(*underlying, extended.as_deref());
+            OptQueryOp::Sort(OptSortData {
+                sort_specs,
+                underlying: Box::new(new_child),
+                is_physically_ordered,
+            })
+        }
+
+        OptQueryOp::HashJoin(hj) => {
+            let needed_set: Option<std::collections::HashSet<&str>> = needed.map(|n| {
+                n.iter().map(|s| s.as_str()).collect()
+            });
+
+            let left_out  = tree_output_cols(&hj.left);
+            let right_out = tree_output_cols(&hj.right);
+
+            let join_cols_needed: Vec<String> = hj.left_keys.iter()
+                .cloned()
+                .chain(hj.right_keys.iter().cloned())
+                .chain(hj.extra_preds.iter().flat_map(|p| {
+                    let mut v = vec![p.column_name.clone()];
+                    if let ComparisionValue::Column(c) = &p.value { v.push(c.clone()); }
+                    v
+                }))
+                .collect();
+
+            let left_needed: Vec<String> = left_out.iter().filter(|c| {
+                if c.ends_with(".*") { return true; }
+                let in_join = join_cols_needed.iter().any(|jc| jc == *c);
+                let in_parent = needed_set.as_ref()
+                    .map(|ns| ns.contains(c.as_str()))
+                    .unwrap_or(true);
+                in_join || in_parent
+            }).cloned().collect();
+
+            let right_needed: Vec<String> = right_out.iter().filter(|c| {
+                if c.ends_with(".*") { return true; }
+                let in_join = join_cols_needed.iter().any(|jc| jc == *c);
+                let in_parent = needed_set.as_ref()
+                    .map(|ns| ns.contains(c.as_str()))
+                    .unwrap_or(true);
+                in_join || in_parent
+            }).cloned().collect();
+
+            // Recurse into children with their needed sets
+            // Don't inject extra Project nodes — just recurse and let FilteredScan handle it
+            let left_child = Box::new(prune_columns_top_down(
+                *hj.left,
+                if left_needed.iter().any(|c| c.ends_with(".*")) { None } else { Some(&left_needed) }
+            ));
+            let right_child = Box::new(prune_columns_top_down(
+                *hj.right,
+                if right_needed.iter().any(|c| c.ends_with(".*")) { None } else { Some(&right_needed) }
+            ));
+
+            OptQueryOp::HashJoin(HashJoinData {
+                left: left_child,
+                right: right_child,
+                ..hj
+            })
+        }
+
+        // KEY FIX: push needed columns directly into FilteredScan projection
+        OptQueryOp::FilteredScan(mut fs) => {
+            if let Some(needed_cols) = needed {
+                if fs.project.is_none() && !needed_cols.is_empty() {
+                    // Build projection from what the scan outputs vs what's needed
+                    let table_prefix = format!("{}.", fs.table_id);
+                    let proj: Vec<(String, String)> = needed_cols.iter()
+                        .filter(|c| {
+                            c.starts_with(&table_prefix)
+                            || known_col_prefix(&fs.table_id, c)
+                        })
+                        .map(|c| (c.clone(), c.clone()))
+                        .collect();
+                    if !proj.is_empty() {
+                        eprintln!("[OPT-26] FScan({}) pruned to {} cols (from needed={})",
+                                  fs.table_id, proj.len(), needed_cols.len());
+                        fs.project = Some(proj);
+                    }
+                }
+            }
+            OptQueryOp::FilteredScan(fs)
+        }
+
+        OptQueryOp::Filter(OptFilterData { predicates, underlying }) => {
+            let pred_cols: Vec<String> = predicates.iter().flat_map(|p| {
+                let mut v = vec![p.column_name.clone()];
+                if let ComparisionValue::Column(c) = &p.value { v.push(c.clone()); }
+                v
+            }).collect();
+            let extended: Option<Vec<String>> = needed.map(|n| {
+                let mut v = n.to_vec();
+                for c in &pred_cols { if !v.contains(c) { v.push(c.clone()); } }
+                v
+            });
+            OptQueryOp::Filter(OptFilterData {
+                predicates,
+                underlying: Box::new(prune_columns_top_down(*underlying, extended.as_deref())),
+            })
+        }
+
+        OptQueryOp::FilterCross(d) => OptQueryOp::FilterCross(FilterCrossData {
+            left:  Box::new(prune_columns_top_down(*d.left,  needed)),
+            right: Box::new(prune_columns_top_down(*d.right, needed)),
+            ..d
+        }),
+
+        other => other,
+    }
+}
+
 pub fn optimise_with_ctx(op: QueryOp, ctx: &OptContext<'_>) -> OptQueryOp {
     eprintln!("[OPT] start budget={}MB", ctx.memory_budget_bytes / (1024 * 1024));
-    // Pass 1: lower → join detection + predicate distribution.
-    let lowered = lower(op, ctx);
-    // Pass 2: structural fusions (FScan, projection pushdown, sort opts).
-    let fused   = fuse_operators(lowered, ctx);
-    // Pass 3: [FIX-CROSS-OOM] re-distribute predicates; convert surviving
-    //         large Cross nodes to FilterCross; annotate OPT-19 early stops.
-    let cleaned = distribute_predicates_deep(fused, ctx);
-    // Pass 4: [OPT-22] Multi-pass scalar pushdown — push any remaining
-    //         scalar preds through project/sort/filter barriers to FScan leaves.
-    let pushed  = push_all_scalars_deep(cleaned, ctx);
-    // Pass 5: [OPT-23] Redundant Project elimination.
-    let deduped = elide_redundant_projects(pushed);
-    // Pass 6: [OPT-21] Reorder extra_preds inside every HashJoin by selectivity.
+    let lowered   = lower(op, ctx);
+    let fused     = fuse_operators(lowered, ctx);
+    let cleaned   = distribute_predicates_deep(fused, ctx);
+    let pushed    = push_all_scalars_deep(cleaned, ctx);
+    let deduped   = elide_redundant_projects(pushed);
     let reordered = reorder_join_extra_preds(deduped, ctx);
-    // Pass 7: diagnostic — verify scalar predicates are pushed to leaves.
-    verify_scalar_pushdown(&reordered);
-    eprintln!("[OPT] final plan: {}", plan_summary(&reordered));
-    reordered
+    // NEW: column pruning pass — trim wide join outputs
+    let pruned    = prune_columns_top_down(reordered, None);
+    verify_scalar_pushdown(&pruned);
+    eprintln!("[OPT] final plan: {}", plan_summary(&pruned));
+    pruned
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -852,10 +984,9 @@ fn build_join_node(
         return OptQueryOp::Cross(OptCrossData { left, right });
     }
 
-    // [FIX-COMPOSITE-JOIN][FIX-NE-JOIN]: Separate equi-predicates from non-equi.
+    // Separate equi-predicates from non-equi.
     let mut equi_preds:    Vec<Predicate> = Vec::new();
     let mut nonequi_preds: Vec<Predicate> = Vec::new();
-
     for pred in join_preds {
         let is_equi = pred.operator == ComparisionOperator::EQ
             && matches!(&pred.value, ComparisionValue::Column(_));
@@ -871,12 +1002,63 @@ fn build_join_node(
         for pred in &equi_preds {
             if let ComparisionValue::Column(rhs) = &pred.value {
                 let lhs = pred.column_name.clone();
+
+                // --- Direct check (existing logic) ---
                 if tree_has_col(&left, &lhs) && tree_has_col(&right, rhs) {
-                    left_keys.push(lhs); right_keys.push(rhs.clone());
+                    left_keys.push(lhs);
+                    right_keys.push(rhs.clone());
                 } else if tree_has_col(&left, rhs) && tree_has_col(&right, &lhs) {
-                    left_keys.push(rhs.clone()); right_keys.push(lhs);
+                    left_keys.push(rhs.clone());
+                    right_keys.push(lhs);
                 } else {
-                    unresolved.push(pred.clone());
+                    // --- [FIX-ALIAS-SELF-JOIN] Bare-name resolution ---
+                    // Handles "l2.l_orderkey = l1.l_orderkey" where left outputs
+                    // "l1.l_orderkey" and right outputs "l2.l_orderkey" (or vice versa).
+                    let lhs_bare = lhs.split('.').last().unwrap_or(&lhs);
+                    let rhs_bare = rhs.split('.').last().unwrap_or(rhs.as_str());
+
+                    let left_has_lhs  = tree_has_col_bare(&left,  lhs_bare);
+                    let left_has_rhs  = tree_has_col_bare(&left,  rhs_bare);
+                    let right_has_lhs = tree_has_col_bare(&right, lhs_bare);
+                    let right_has_rhs = tree_has_col_bare(&right, rhs_bare);
+
+                    if left_has_lhs && right_has_rhs && lhs_bare != rhs_bare {
+                        // Different bare names — direct assignment
+                        let lk = tree_find_col_named(&left,  lhs_bare)
+                            .unwrap_or_else(|| lhs.clone());
+                        let rk = tree_find_col_named(&right, rhs_bare)
+                            .unwrap_or_else(|| rhs.clone());
+                        eprintln!("[FIX-ALIAS-SELF-JOIN] resolved {}/{} → lk={} rk={}",
+                                  lhs, rhs, lk, rk);
+                        left_keys.push(lk);
+                        right_keys.push(rk);
+                    } else if left_has_rhs && right_has_lhs && lhs_bare != rhs_bare {
+                        let lk = tree_find_col_named(&left,  rhs_bare)
+                            .unwrap_or_else(|| rhs.clone());
+                        let rk = tree_find_col_named(&right, lhs_bare)
+                            .unwrap_or_else(|| lhs.clone());
+                        eprintln!("[FIX-ALIAS-SELF-JOIN] resolved {}/{} → lk={} rk={}",
+                                  lhs, rhs, lk, rk);
+                        left_keys.push(lk);
+                        right_keys.push(rk);
+                    } else if lhs_bare == rhs_bare {
+                        // Same bare name — self-join alias case (l1.l_orderkey = l2.l_orderkey)
+                        // left outputs l1.l_orderkey, right outputs l2.l_orderkey (same bare)
+                        let lk = tree_find_col_named(&left,  lhs_bare)
+                            .unwrap_or_else(|| lhs.clone());
+                        let rk = tree_find_col_named(&right, rhs_bare)
+                            .unwrap_or_else(|| rhs.clone());
+                        if lk != rk {
+                            eprintln!("[FIX-ALIAS-SELF-JOIN] same-bare resolved: lk={} rk={}",
+                                      lk, rk);
+                            left_keys.push(lk);
+                            right_keys.push(rk);
+                        } else {
+                            unresolved.push(pred.clone());
+                        }
+                    } else {
+                        unresolved.push(pred.clone());
+                    }
                 }
             }
         }
@@ -1613,21 +1795,44 @@ fn subtree_is_ordered_on_specs(
             d.sort_specs.len() >= specs.len()
             && d.sort_specs.iter().zip(specs.iter())
                 .all(|(a, b)| a.column_name == b.column_name && a.ascending == b.ascending),
-        OptQueryOp::FilteredScan(d) if specs.len() == 1 => {
-            let col  = &specs[0].column_name;
-            let bare = col.split('.').last().unwrap_or(col);
-            ctx.column_is_physically_ordered(&d.table_id, bare)
+
+        OptQueryOp::FilteredScan(d) => {
+            // Case 1: explicit early-stop annotation on exactly the first sort col
+            if let Some(ref oc) = d.is_physically_ordered_on {
+                let col      = &specs[0].column_name;
+                let bare     = col.split('.').last().unwrap_or(col);
+                let oc_bare  = oc.split('.').last().unwrap_or(oc);
+                if specs[0].ascending && (bare == oc_bare || col == oc.as_str()) {
+                    return true;
+                }
+            }
+            // Case 2: table's PK column is physically ordered and first sort spec
+            // matches it — the filter does not change physical order.
+            if !specs.is_empty() && specs[0].ascending {
+                let col  = &specs[0].column_name;
+                let bare = col.split('.').last().unwrap_or(col);
+                if ctx.column_is_physically_ordered(&d.table_id, bare) {
+                    eprintln!("[OPT-11] FScan({}) already ordered on '{}' → sort skipped",
+                              d.table_id, bare);
+                    return true;
+                }
+            }
+            false
         }
-        OptQueryOp::Scan(d) if specs.len() == 1 => {
-            let col  = &specs[0].column_name;
-            let bare = col.split('.').last().unwrap_or(col);
-            ctx.column_is_physically_ordered(&d.table_id, bare)
+
+        OptQueryOp::Scan(d) => {
+            if !specs.is_empty() && specs[0].ascending {
+                let col  = &specs[0].column_name;
+                let bare = col.split('.').last().unwrap_or(col);
+                if ctx.column_is_physically_ordered(&d.table_id, bare) {
+                    return true;
+                }
+            }
+            false
         }
+
         OptQueryOp::Filter(d)  => subtree_is_ordered_on_specs(&d.underlying, specs, ctx),
         OptQueryOp::Project(d) => subtree_is_ordered_on_specs(&d.underlying, specs, ctx),
-        // [OPT-24] HashJoin probe side preserves order when probe is ordered and
-        // the join doesn't scramble rows (only possible for 1-1 FK joins — rare,
-        // so we conservatively return false here to avoid incorrect skipped sorts).
         _ => false,
     }
 }
@@ -1697,6 +1902,71 @@ fn tpch_row_estimate(name: &str) -> u64 {
         "orders"   =>    150_000,
         "lineitem" =>    600_000,
         _          =>     50_000,
+    }
+}
+
+/// Check if a subtree has any output column whose bare name (after last '.') matches.
+/// True if any output column of the subtree has the given bare name (after last '.').
+fn tree_has_col_bare(op: &OptQueryOp, bare: &str) -> bool {
+    match op {
+        OptQueryOp::Project(d) =>
+            d.column_name_map.iter().any(|(_, to)| {
+                to.split('.').last().unwrap_or(to) == bare
+            }),
+        OptQueryOp::FilteredScan(d) => {
+            if let Some(ref proj) = d.project {
+                proj.iter().any(|(_, to)| to.split('.').last().unwrap_or(to) == bare)
+            } else {
+                // No projection — check if the table has a column with this bare name
+                known_col_prefix(&d.table_id, &format!("_{}", bare))
+                    || bare.contains('_') // heuristic: any col_ name might be from this table
+            }
+        }
+        OptQueryOp::Scan(d) => {
+            // Check if the table plausibly has a column with this bare name.
+            // We use known_col_prefix with a dummy full name.
+            known_col_prefix(&d.table_id, &format!("x_{}", bare))
+        }
+        OptQueryOp::Filter(d)      => tree_has_col_bare(&d.underlying, bare),
+        OptQueryOp::Sort(d)        => tree_has_col_bare(&d.underlying, bare),
+        OptQueryOp::HashJoin(d)    =>
+            tree_has_col_bare(&d.left, bare) || tree_has_col_bare(&d.right, bare),
+        OptQueryOp::FilterCross(d) =>
+            tree_has_col_bare(&d.left, bare) || tree_has_col_bare(&d.right, bare),
+        OptQueryOp::Cross(d)       =>
+            tree_has_col_bare(&d.left, bare) || tree_has_col_bare(&d.right, bare),
+    }
+}
+
+/// Find the actual output column name whose bare name (after last '.') matches.
+/// Returns the first match, i.e. the aliased name like "l1.l_orderkey".
+fn tree_find_col_named(op: &OptQueryOp, bare: &str) -> Option<String> {
+    match op {
+        OptQueryOp::Project(d) =>
+            d.column_name_map.iter()
+                .find(|(_, to)| to.split('.').last().unwrap_or(to) == bare)
+                .map(|(_, to)| to.clone()),
+        OptQueryOp::FilteredScan(d) => {
+            if let Some(ref proj) = d.project {
+                proj.iter()
+                    .find(|(_, to)| to.split('.').last().unwrap_or(to) == bare)
+                    .map(|(_, to)| to.clone())
+            } else {
+                None
+            }
+        }
+        OptQueryOp::Filter(d)      => tree_find_col_named(&d.underlying, bare),
+        OptQueryOp::Sort(d)        => tree_find_col_named(&d.underlying, bare),
+        OptQueryOp::HashJoin(d)    =>
+            tree_find_col_named(&d.left, bare)
+                .or_else(|| tree_find_col_named(&d.right, bare)),
+        OptQueryOp::FilterCross(d) =>
+            tree_find_col_named(&d.left, bare)
+                .or_else(|| tree_find_col_named(&d.right, bare)),
+        OptQueryOp::Cross(d)       =>
+            tree_find_col_named(&d.left, bare)
+                .or_else(|| tree_find_col_named(&d.right, bare)),
+        _ => None,
     }
 }
 
