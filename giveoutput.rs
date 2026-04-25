@@ -128,11 +128,11 @@ const SMALL_RUNSET_THRESHOLD: usize = 1_000;
 // Using half the memory budget (frac=2) means each output buffer gets at most
 // memory_limit/2 bytes before spilling. This replaces the old hard clamp of
 // 32_768 rows which could allow 52 MB buffers with wide rows.
-const SPILL_BUDGET_FRAC: usize = 8;
+const SPILL_BUDGET_FRAC: usize = 6;
 
 // [BUG-SORT-BUFFER] Merge output fraction — give the merge a larger slice
 // (1/3) so it produces fewer output runs, reducing subsequent merge overhead.
-const MERGE_BUDGET_FRAC: usize = 6;
+const MERGE_BUDGET_FRAC: usize = 4;
 
 // [OPT-09-DYNAMIC] Absolute minimum and maximum rows per buffer, independent
 // of budget fraction. The minimum prevents starvation on tiny budgets; the
@@ -206,12 +206,12 @@ struct MergeHead {
     block_row_idx:   usize,
     block_off:       usize,
     current_row:     Option<Row>,
+    lookahead:       VecDeque<Vec<u8>>,  // prefetched blocks
 }
 
 impl MergeHead {
     fn advance(&mut self, bs: usize) {
         loop {
-            // Try to decode next row from current block
             if self.block_row_idx < self.block_row_count
                 && self.block_off < bs.saturating_sub(2)
             {
@@ -221,7 +221,6 @@ impl MergeHead {
                     return;
                 }
             }
-            // Current block exhausted — need next block (loaded externally)
             self.current_row = None;
             return;
         }
@@ -239,6 +238,16 @@ impl MergeHead {
         self.block_row_idx = 0;
         self.block_off = 0;
         self.advance(bs);
+    }
+
+    // Load next block from lookahead if available, returns true if loaded
+    fn load_from_lookahead(&mut self, bs: usize) -> bool {
+        if let Some(buf) = self.lookahead.pop_front() {
+            self.load_block(buf, bs);
+            true
+        } else {
+            false
+        }
     }
 }
 // ─────────────────────────────────────────────────────────────────────────────
@@ -285,50 +294,69 @@ struct PartWriter {
     start_block: u64,
     num_blocks:  u64,
     row_count:   usize,
-    buf:         Vec<u8>,  // current block being filled
+    buf:         Vec<u8>,
     buf_off:     usize,
     buf_cnt:     u16,
-    // NO all_data field — flush each block immediately
+    next_block:  u64,
 }
 
 impl PartWriter {
     fn new(start: u64, bs: usize) -> Self {
         PartWriter {
-            start_block: start, num_blocks: 0, row_count: 0,
-            buf: vec![0u8; bs], buf_off: 0, buf_cnt: 0,
+            start_block: start,
+            num_blocks:  0,
+            row_count:   0,
+            buf:         vec![0u8; bs],
+            buf_off:     0,
+            buf_cnt:     0,
+            next_block:  start,
         }
     }
 
     fn push_encoded<W: Write>(&mut self, enc: &[u8], disk_out: &mut W) -> Result<()> {
         let bs = self.buf.len();
         let usable = bs - 2;
-        if enc.len() > usable { anyhow::bail!("row {} B > usable {} B", enc.len(), usable); }
+        if enc.len() > usable {
+            anyhow::bail!("row {} B > usable {} B", enc.len(), usable);
+        }
         if self.buf_off + enc.len() > usable {
-            // Flush current block immediately
             let cnt = self.buf_cnt;
-            self.buf[bs-2] = (cnt & 0xFF) as u8; self.buf[bs-1] = (cnt >> 8) as u8;
-            let abs = self.start_block + self.num_blocks;
-            disk_out.write_all(format!("put block {} 1\n", abs).as_bytes())?;
+            self.buf[bs-2] = (cnt & 0xFF) as u8;
+            self.buf[bs-1] = (cnt >> 8) as u8;
+            disk_out.write_all(format!("put block {} 1\n", self.next_block).as_bytes())?;
             disk_out.write_all(&self.buf)?;
-            self.num_blocks += 1; self.buf.fill(0); self.buf_off = 0; self.buf_cnt = 0;
+            self.next_block  += 1;
+            self.num_blocks  += 1;
+            self.buf.fill(0);
+            self.buf_off = 0;
+            self.buf_cnt = 0;
         }
         let s = self.buf_off;
-        self.buf[s..s+enc.len()].copy_from_slice(enc);
-        self.buf_off += enc.len(); self.buf_cnt += 1; self.row_count += 1;
+        self.buf[s..s + enc.len()].copy_from_slice(enc);
+        self.buf_off += enc.len();
+        self.buf_cnt += 1;
+        self.row_count += 1;
         Ok(())
     }
 
     fn finish<W: Write>(&mut self, disk_out: &mut W) -> Result<(u64, u64, usize)> {
         if self.buf_cnt > 0 {
-            let bs = self.buf.len();
+            let bs  = self.buf.len();
             let cnt = self.buf_cnt;
-            self.buf[bs-2] = (cnt & 0xFF) as u8; self.buf[bs-1] = (cnt >> 8) as u8;
-            let abs = self.start_block + self.num_blocks;
-            disk_out.write_all(format!("put block {} 1\n", abs).as_bytes())?;
+            self.buf[bs-2] = (cnt & 0xFF) as u8;
+            self.buf[bs-1] = (cnt >> 8) as u8;
+            disk_out.write_all(format!("put block {} 1\n", self.next_block).as_bytes())?;
             disk_out.write_all(&self.buf)?;
-            self.num_blocks += 1; self.buf_cnt = 0;
+            self.next_block += 1;
+            self.num_blocks += 1;
+            self.buf_cnt = 0;
         }
         Ok((self.start_block, self.num_blocks, self.row_count))
+    }
+
+    /// First block after this writer's data — used to chain writers sequentially.
+    fn next_free_block(&self) -> u64 {
+        self.next_block
     }
 }
 
@@ -389,9 +417,15 @@ impl<'a, R: BufRead, W: Write> Executor<'a, R, W> {
     // Now the maximum is budget/bpr, so at bpr=1600 and budget=32 MB the cap
     // is 32MB/1600 = 20_000 rows (correct).
     // ─────────────────────────────────────────────────────────────────────────
+    // Replace safe_cap entirely:
     fn safe_cap(byte_budget: usize, bpr: usize) -> usize {
         if bpr == 0 { return MIN_CAP_ROWS; }
-        (byte_budget / bpr).clamp(MIN_CAP_ROWS, byte_budget / bpr.max(1))
+        let by_budget = byte_budget / bpr;
+        // Hard upper cap: never try to hold more than 8 MB worth of rows in one chunk.
+        // This prevents OOM when the budget is large but other operators already
+        // hold memory (e.g. sort called after a grace hash join).
+        let hard_cap = (8 * 1024 * 1024) / bpr.max(1);
+        by_budget.clamp(MIN_CAP_ROWS, hard_cap.max(MIN_CAP_ROWS))
     }
 
     // ─────────────────────────────────────────────────────────────────────────
@@ -477,38 +511,42 @@ impl<'a, R: BufRead, W: Write> Executor<'a, R, W> {
         if rows.is_empty() {
             return Ok(ScratchRun { start_block: self.next_anon, num_blocks: 0, row_count: 0 });
         }
-        let bs = self.block_size as usize;
+        let bs     = self.block_size as usize;
         let usable = bs - 2;
-        let start = self.next_anon;
-        
-        // Encode all rows into a contiguous buffer first
-        let mut all_data: Vec<u8> = Vec::new();
-        let mut enc = Vec::with_capacity(512);
+        let start  = self.next_anon;
+        let mut enc   = Vec::with_capacity(512);
         let mut n_blk = 0u64;
-        let mut blk = vec![0u8; bs];
-        let mut off = 0usize;
-        let mut cnt = 0u16;
-        
+        let mut blk   = vec![0u8; bs];
+        let mut off   = 0usize;
+        let mut cnt   = 0u16;
+
         for row in rows {
-            enc.clear(); encode_row(row, &mut enc);
-            if enc.len() > usable { anyhow::bail!("row {} B > usable {} B", enc.len(), usable); }
-            if off + enc.len() > usable {
-                blk[bs-2] = (cnt & 0xFF) as u8; blk[bs-1] = (cnt >> 8) as u8;
-                all_data.extend_from_slice(&blk);
-                n_blk += 1; blk.fill(0); off = 0; cnt = 0;
+            enc.clear();
+            encode_row(row, &mut enc);
+            if enc.len() > usable {
+                anyhow::bail!("row {} B > usable {} B", enc.len(), usable);
             }
-            blk[off..off+enc.len()].copy_from_slice(&enc);
-            off += enc.len(); cnt += 1;
+            if off + enc.len() > usable {
+                blk[bs-2] = (cnt & 0xFF) as u8;
+                blk[bs-1] = (cnt >> 8) as u8;
+                self.disk_out.write_all(format!("put block {} 1\n", start + n_blk).as_bytes())?;
+                self.disk_out.write_all(&blk)?;
+                n_blk += 1;
+                blk.fill(0);
+                off = 0;
+                cnt = 0;
+            }
+            blk[off..off + enc.len()].copy_from_slice(&enc);
+            off += enc.len();
+            cnt += 1;
         }
-        if cnt > 0 || n_blk == 0 {
-            blk[bs-2] = (cnt & 0xFF) as u8; blk[bs-1] = (cnt >> 8) as u8;
-            all_data.extend_from_slice(&blk);
+        if cnt > 0 {
+            blk[bs-2] = (cnt & 0xFF) as u8;
+            blk[bs-1] = (cnt >> 8) as u8;
+            self.disk_out.write_all(format!("put block {} 1\n", start + n_blk).as_bytes())?;
+            self.disk_out.write_all(&blk)?;
             n_blk += 1;
         }
-        
-        // Write all blocks in ONE request
-        self.disk_out.write_all(format!("put block {} {}\n", start, n_blk).as_bytes())?;
-        self.disk_out.write_all(&all_data)?;
         self.disk_out.flush()?;
         self.next_anon += n_blk;
         Ok(ScratchRun { start_block: start, num_blocks: n_blk, row_count: rows.len() })
@@ -677,10 +715,92 @@ impl<'a, R: BufRead, W: Write> Executor<'a, R, W> {
                 }
             }
 
+            // In stream_op, replace the FilteredScan arm:
             OptQueryOp::FilteredScan(d) => {
-                // Reuse existing exec but stream its output
-                let rs = self.exec_filtered_scan(d)?;
-                self.stream_runset(rs, f)?;
+                // Stream directly — don't materialize to RunSet first
+                let spec = self.ctx.get_table_specs().iter().find(|t| t.name == d.table_id)
+                    .ok_or_else(|| anyhow::anyhow!("table not found: '{}'", d.table_id))?
+                    .clone();
+                let col_specs = spec.column_specs.clone();
+                let table_id  = d.table_id.clone();
+                let preds     = d.predicates.clone();
+                let project   = d.project.clone();
+                let col_names: Vec<String> = col_specs.iter()
+                    .map(|c| format!("{}.{}", table_id, c.column_name))
+                    .collect();
+
+                let early_stop: Option<(String, EarlyStopBound)> = d.is_physically_ordered_on.as_ref()
+                    .and_then(|ocol| preds.iter().find_map(|p| {
+                        let cm = &p.column_name == ocol || p.column_name.ends_with(&format!(".{}", ocol));
+                        if !cm { return None; }
+                        match p.operator {
+                            ComparisionOperator::LT | ComparisionOperator::LTE => {
+                                let inclusive = matches!(p.operator, ComparisionOperator::LTE);
+                                let bound = match &p.value {
+                                    ComparisionValue::I32(v)    => EarlyStopBound::Numeric(*v as f64, inclusive),
+                                    ComparisionValue::I64(v)    => EarlyStopBound::Numeric(*v as f64, inclusive),
+                                    ComparisionValue::F32(v)    => EarlyStopBound::Numeric(*v as f64, inclusive),
+                                    ComparisionValue::F64(v)    => EarlyStopBound::Numeric(*v, inclusive),
+                                    ComparisionValue::String(s) => EarlyStopBound::Lexical(s.clone(), inclusive),
+                                    _ => return None,
+                                };
+                                Some((ocol.clone(), bound))
+                            }
+                            _ => None,
+                        }
+                    }));
+
+                let (file_start, file_blocks) = self.get_file_range(&spec.file_id)?;
+                let bs = self.block_size as usize;
+                let mut early_done = false;
+
+                const SCAN_BATCH: u64 = 512;
+                let mut blk_rel = 0u64;
+                'fscan_stream: while blk_rel < file_blocks {
+                    if early_done { break; }
+                    let batch = SCAN_BATCH.min(file_blocks - blk_rel);
+                    let blocks = self.read_blocks_batch(file_start + blk_rel, batch)?;
+                    for blk in &blocks {
+                        if early_done { break 'fscan_stream; }
+                        let b = blk.as_slice();
+                        let rc = u16::from_le_bytes([b[bs-2], b[bs-1]]) as usize;
+                        if rc == 0 { blk_rel += 1; continue; }
+                        let mut off = 0usize;
+                        for _ in 0..rc {
+                            if off >= bs - 2 { break; }
+                            let (row, ok) = decode_table_row_prebuilt(b, &mut off, bs, &col_names, &col_specs);
+                            if !ok { break; }
+                            if let Some((ref ec, ref bound)) = early_stop {
+                                if let Some(vs) = col_val(&row, ec) {
+                                    let exceeded = match bound {
+                                        EarlyStopBound::Numeric(bv, incl) => {
+                                            if let Ok(v) = vs.parse::<f64>() {
+                                                if *incl { v > *bv } else { v >= *bv }
+                                            } else { false }
+                                        }
+                                        EarlyStopBound::Lexical(bv, incl) => {
+                                            if *incl { vs > bv.as_str() } else { vs >= bv.as_str() }
+                                        }
+                                    };
+                                    if exceeded { early_done = true; break 'fscan_stream; }
+                                }
+                            }
+                            if !eval_preds(&row, &preds) { continue; }
+                            let emit = if let Some(ref proj) = project {
+                                let mut r = Vec::with_capacity(proj.len());
+                                for (from, to) in proj {
+                                    if let Some(v) = find_col(&row, from) {
+                                        r.push((to.clone(), v.clone()));
+                                    }
+                                }
+                                if r.is_empty() { continue; }
+                                r
+                            } else { row };
+                            f(self, emit)?;
+                        }
+                        blk_rel += 1;
+                    }
+                }
             }
 
             // Pipelined: filter rows from child on the fly
@@ -875,7 +995,7 @@ impl<'a, R: BufRead, W: Write> Executor<'a, R, W> {
         let mut n_rejected = 0usize;
         let mut early_done = false;
 
-        const SCAN_BATCH: u64 = 64;
+        const SCAN_BATCH: u64 = 512;
         let mut blk_rel = 0u64;
         'scan_loop: while blk_rel < file_blocks {
             if early_done { break; }
@@ -1190,13 +1310,24 @@ impl<'a, R: BufRead, W: Write> Executor<'a, R, W> {
 
         if overflowed {
             eprintln!("[OPT-07] overflow → Grace Hash Join");
-            let total_rows = build_row_count;
             let all_runs: Vec<ScratchRun> = build_disk_descs.iter()
                 .map(|&(s, n)| ScratchRun { start_block: s, num_blocks: n, row_count: 0 }).collect();
-            let all_build = RunSet::Spilled { row_count: total_rows, runs: all_runs };
-            // Execute probe side now
-            let probe_rs = self.exec_node(&data.right)?;
-            eprintln!("[HJ] right={}", probe_rs.row_count());
+            let all_build = RunSet::Spilled { row_count: build_row_count, runs: all_runs };
+
+            // Stream probe side into a spilled RunSet without full materialization
+            let byte_budget = self.memory_limit_bytes / SPILL_BUDGET_FRAC;
+            let mut probe_buf: Vec<Row> = Vec::new();
+            let mut probe_runs: Vec<ScratchRun> = Vec::new();
+            let mut probe_cap = 0usize;
+            let mut probe_total = 0usize;
+            let mut probe_ram = 0usize;
+            let probe_child = data.right.as_ref() as *const OptQueryOp;
+            self.stream_op(unsafe { &*probe_child }, &mut |this, row| {
+                this.emit_row(row, &mut probe_buf, &mut probe_runs, &mut probe_cap,
+                            &mut probe_total, &mut probe_ram, byte_budget)
+            })?;
+            let probe_rs = self.finalize_output(probe_buf, probe_runs, probe_total)?;
+            eprintln!("[HJ] grace probe streamed: {} rows", probe_rs.row_count());
             return self.grace_hash_join(all_build, probe_rs, build_keys, probe_keys, extra_preds);
         }
 
@@ -1347,47 +1478,55 @@ impl<'a, R: BufRead, W: Write> Executor<'a, R, W> {
         Ok(())
     }
     fn grace_hash_join(&mut self, build_rs: RunSet, probe_rs: RunSet,
-               build_keys: Vec<String>, probe_keys: Vec<String>,
-               extra_preds: Vec<Predicate>) -> Result<RunSet> {
+           build_keys: Vec<String>, probe_keys: Vec<String>,
+           extra_preds: Vec<Predicate>) -> Result<RunSet> {
         let avg_row = 1200usize;
         let n_parts = grace_partition_count(build_rs.row_count() as u64, avg_row, self.memory_limit_bytes);
         let bs = self.block_size as usize;
-        let build_rows_est = build_rs.row_count();
-        let probe_rows_est = probe_rs.row_count();
 
-        let rows_per_part = (build_rows_est / n_parts).max(1);
-        let per_blks  = ((rows_per_part * avg_row + bs - 1) / bs + 2).max(4) as u64;
-        let probe_per = (((probe_rows_est / n_parts) * avg_row + bs - 1) / bs + 2).max(4) as u64;
-        eprintln!("[OPT-16] grace n_parts={} per_blks={} probe_per={}", n_parts, per_blks, probe_per);
+        eprintln!("[OPT-16] grace n_parts={}", n_parts);
 
-        let blks_per_part = (per_blks * 2).max(8);
+        let mut enc     = Vec::with_capacity(1024);
+        let mut key_buf = String::with_capacity(128);
+
+        // ── Partition BUILD side ──────────────────────────────────────────────
+        // Each PartWriter writes directly to disk as rows arrive.
+        // We interleave blocks from all partitions, each partition getting its
+        // own contiguous region. We don't know sizes upfront, so we allocate
+        // generously per partition: estimate build rows per partition + 20% slack.
+        let build_rows_est  = build_rs.row_count();
+        let rows_per_part   = ((build_rows_est / n_parts) as f64 * 1.4) as u64 + 16;
+        let blks_per_part   = ((rows_per_part * avg_row as u64 + bs as u64 - 1) / bs as u64 + 2).max(8);
+
         let build_base = self.next_anon;
         self.next_anon += blks_per_part * n_parts as u64;
+
         let mut bw: Vec<PartWriter> = (0..n_parts)
             .map(|i| PartWriter::new(build_base + i as u64 * blks_per_part, bs))
             .collect();
 
-        // ── Partition build side ──────────────────────────────────────────────
         let build_descs = self.ensure_on_disk(build_rs)?;
-        let mut enc = Vec::with_capacity(1024);
-        let mut key_buf = String::with_capacity(128);
-
         for (start, n_blk) in &build_descs {
             if *n_blk == 0 { continue; }
-            let blocks = self.read_blocks_batch(*start, *n_blk)?;
-            for buf in &blocks {
-                let rc = u16::from_le_bytes([buf[bs-2], buf[bs-1]]) as usize;
-                let mut off = 0usize;
-                for _ in 0..rc {
-                    if let Some(row) = decode_row(buf, &mut off) {
-                        make_join_key_into(&row, &build_keys, &mut key_buf);
-                        let pi = hash_str(&key_buf) % n_parts;
-                        enc.clear(); encode_row(&row, &mut enc);
-                        let enc_ref = &enc;
-                        let disk_out = &mut self.disk_out;
-                        bw[pi].push_encoded(enc_ref, disk_out)?;
+            let mut blk_idx = 0u64;
+            while blk_idx < *n_blk {
+                let batch  = (64u64).min(*n_blk - blk_idx);
+                let blocks = self.read_blocks_batch(*start + blk_idx, batch)?;
+                for buf in &blocks {
+                    let rc  = u16::from_le_bytes([buf[bs-2], buf[bs-1]]) as usize;
+                    let mut off = 0usize;
+                    for _ in 0..rc {
+                        if let Some(row) = decode_row(buf, &mut off) {
+                            make_join_key_into(&row, &build_keys, &mut key_buf);
+                            let pi = hash_str(&key_buf) % n_parts;
+                            enc.clear();
+                            encode_row(&row, &mut enc);
+                            let disk_out = &mut self.disk_out;
+                            bw[pi].push_encoded(&enc, disk_out)?;
+                        }
                     }
                 }
+                blk_idx += batch;
             }
         }
 
@@ -1395,35 +1534,50 @@ impl<'a, R: BufRead, W: Write> Executor<'a, R, W> {
         for i in 0..n_parts {
             let result = bw[i].finish(&mut self.disk_out)?;
             self.disk_out.flush()?;
+            // Safety check: did we overflow the allocated region?
+            let (p_start, p_nblk, _) = result;
+            if p_nblk > blks_per_part {
+                eprintln!("[GRACE][WARN] build partition {} used {} blocks, allocated {}",
+                        i, p_nblk, blks_per_part);
+            }
             build_parts.push(result);
         }
         drop(bw);
 
-        // ── Partition probe side ──────────────────────────────────────────────
-        let probe_blks_per_part = (probe_per * 2).max(8);
+        // ── Partition PROBE side ──────────────────────────────────────────────
+        let probe_rows_est  = probe_rs.row_count();
+        let probe_per_part  = ((probe_rows_est / n_parts) as f64 * 1.4) as u64 + 16;
+        let probe_blks_per  = ((probe_per_part * avg_row as u64 + bs as u64 - 1) / bs as u64 + 2).max(8);
+
         let probe_base = self.next_anon;
-        self.next_anon += probe_blks_per_part * n_parts as u64;
+        self.next_anon += probe_blks_per * n_parts as u64;
+
         let mut pw: Vec<PartWriter> = (0..n_parts)
-            .map(|i| PartWriter::new(probe_base + i as u64 * probe_blks_per_part, bs))
+            .map(|i| PartWriter::new(probe_base + i as u64 * probe_blks_per, bs))
             .collect();
 
         let probe_descs = self.ensure_on_disk(probe_rs)?;
         for (start, n_blk) in &probe_descs {
             if *n_blk == 0 { continue; }
-            let blocks = self.read_blocks_batch(*start, *n_blk)?;
-            for buf in &blocks {
-                let rc = u16::from_le_bytes([buf[bs-2], buf[bs-1]]) as usize;
-                let mut off = 0usize;
-                for _ in 0..rc {
-                    if let Some(row) = decode_row(buf, &mut off) {
-                        make_join_key_into(&row, &probe_keys, &mut key_buf);
-                        let pi = hash_str(&key_buf) % n_parts;
-                        enc.clear(); encode_row(&row, &mut enc);
-                        let enc_ref = &enc;
-                        let disk_out = &mut self.disk_out;
-                        pw[pi].push_encoded(enc_ref, disk_out)?;
+            let mut blk_idx = 0u64;
+            while blk_idx < *n_blk {
+                let batch  = (64u64).min(*n_blk - blk_idx);
+                let blocks = self.read_blocks_batch(*start + blk_idx, batch)?;
+                for buf in &blocks {
+                    let rc  = u16::from_le_bytes([buf[bs-2], buf[bs-1]]) as usize;
+                    let mut off = 0usize;
+                    for _ in 0..rc {
+                        if let Some(row) = decode_row(buf, &mut off) {
+                            make_join_key_into(&row, &probe_keys, &mut key_buf);
+                            let pi = hash_str(&key_buf) % n_parts;
+                            enc.clear();
+                            encode_row(&row, &mut enc);
+                            let disk_out = &mut self.disk_out;
+                            pw[pi].push_encoded(&enc, disk_out)?;
+                        }
                     }
                 }
+                blk_idx += batch;
             }
         }
 
@@ -1437,8 +1591,10 @@ impl<'a, R: BufRead, W: Write> Executor<'a, R, W> {
 
         // ── Join each partition pair ──────────────────────────────────────────
         let byte_budget = self.memory_limit_bytes / SPILL_BUDGET_FRAC;
-        let mut out_buf = Vec::new(); let mut out_runs = Vec::new();
-        let mut out_cap = 0usize; let mut out_total = 0usize;
+        let mut out_buf         = Vec::new();
+        let mut out_runs        = Vec::new();
+        let mut out_cap         = 0usize;
+        let mut out_total       = 0usize;
         let mut buf_ram_running = 0usize;
 
         for i in 0..n_parts {
@@ -1460,13 +1616,17 @@ impl<'a, R: BufRead, W: Write> Executor<'a, R, W> {
 
             if max_f > skew_thresh && skew_thresh > 0 {
                 eprintln!("[OPT-15] partition {} skewed (max_f={}/{}) → NLJ", i, max_f, b_rc);
-                self.grace_nlj_rows(&part_rows, &probe_keys, &build_keys, &extra_preds,
-                                    p_start, p_nblk, &mut out_buf, &mut out_runs, &mut out_cap,
-                                    &mut out_total, &mut buf_ram_running, byte_budget)?;
+                self.grace_nlj_rows(
+                    &part_rows, &probe_keys, &build_keys, &extra_preds,
+                    p_start, p_nblk,
+                    &mut out_buf, &mut out_runs, &mut out_cap,
+                    &mut out_total, &mut buf_ram_running, byte_budget,
+                )?;
                 continue;
             }
 
-            let mut part_map: HashMap<String, Vec<Row>> = HashMap::with_capacity(part_rows.len());
+            let mut part_map: HashMap<String, Vec<Row>> =
+                HashMap::with_capacity(part_rows.len());
             for row in part_rows {
                 make_join_key_into(&row, &build_keys, &mut key_buf);
                 part_map.entry(key_buf.clone()).or_default().push(row);
@@ -1476,20 +1636,24 @@ impl<'a, R: BufRead, W: Write> Executor<'a, R, W> {
                 const BATCH: u64 = 64;
                 let mut blk_idx = 0u64;
                 while blk_idx < p_nblk {
-                    let batch = BATCH.min(p_nblk - blk_idx);
+                    let batch  = BATCH.min(p_nblk - blk_idx);
                     let blocks = self.read_blocks_batch(p_start + blk_idx, batch)?;
                     for blk in &blocks {
-                        let rc = u16::from_le_bytes([blk[bs-2], blk[bs-1]]) as usize;
+                        let rc  = u16::from_le_bytes([blk[bs-2], blk[bs-1]]) as usize;
                         let mut off = 0usize;
                         for _ in 0..rc {
                             if let Some(p_row) = decode_row(blk, &mut off) {
                                 make_join_key_into(&p_row, &probe_keys, &mut key_buf);
                                 if let Some(b_rows) = part_map.get(&key_buf) {
                                     for b_row in b_rows {
-                                        let mut row = p_row.clone(); row.extend_from_slice(b_row);
+                                        let mut row = p_row.clone();
+                                        row.extend_from_slice(b_row);
                                         if !eval_preds(&row, &extra_preds) { continue; }
-                                        self.emit_row(row, &mut out_buf, &mut out_runs, &mut out_cap,
-                                                    &mut out_total, &mut buf_ram_running, byte_budget)?;
+                                        self.emit_row(
+                                            row, &mut out_buf, &mut out_runs,
+                                            &mut out_cap, &mut out_total,
+                                            &mut buf_ram_running, byte_budget,
+                                        )?;
                                     }
                                 }
                             }
@@ -1555,10 +1719,33 @@ impl<'a, R: BufRead, W: Write> Executor<'a, R, W> {
         Ok(())
     }
 
+
+    // Change the signature of the public-facing merge to return RunSet:
+    fn merge_sorted_runs_top(
+    &mut self,
+    runs: Vec<ScratchRun>,
+    specs: &[SortSpec],
+    out_cap: usize,
+    merge_budget: usize,
+        ) -> Result<RunSet> {
+            let run = self.merge_sorted_runs(runs, specs, out_cap, merge_budget)?;
+            Ok(RunSet::Spilled { row_count: run.row_count, runs: vec![run] })
+        }
     // ─────────────────────────────────────────────────────────────────────────
     // [OPT-08][OPT-11-EXEC][BUG-SORT-BUFFER] exec_sort with tournament-tree merge.
     // ─────────────────────────────────────────────────────────────────────────
     fn exec_sort(&mut self, data: &OptSortData) -> Result<RunSet> {
+        // Special case: if child is a FilteredScan or Scan, fuse scan+sort pass-1
+        // to avoid materializing the entire scan output before sorting.
+        match data.underlying.as_ref() {
+            OptQueryOp::FilteredScan(_) | OptQueryOp::Scan(_) => {
+                if !data.is_physically_ordered {
+                    return self.exec_sort_fused_scan(data);
+                }
+            }
+            _ => {}
+        }
+
         let input = self.exec_node(&data.underlying)?;
         eprintln!("[SORT] input={} ordered={}", input.row_count(), data.is_physically_ordered);
         if data.is_physically_ordered { eprintln!("[OPT-11] Sort skipped"); return Ok(input); }
@@ -1576,13 +1763,11 @@ impl<'a, R: BufRead, W: Write> Executor<'a, R, W> {
         }
 
         let bpr = self.sample_bpr(&input)?;
-        // 1/3 of budget: leaves room for read buffer + output buffer simultaneously
-        let pass1_budget = self.memory_limit_bytes / 3;
+        let pass1_budget = self.memory_limit_bytes / SPILL_BUDGET_FRAC;
         let pass1_cap = Self::safe_cap(pass1_budget, bpr);
         eprintln!("[OPT-08] external sort bpr~{} pass1_cap={}", bpr, pass1_cap);
         let specs = data.sort_specs.clone();
         let mut runs: Vec<ScratchRun> = Vec::new();
-        // IMPORTANT: do NOT pre-allocate with_capacity here — use push and let it grow
         let mut chunk: Vec<Row> = Vec::new();
         let bs = self.block_size as usize;
 
@@ -1601,20 +1786,25 @@ impl<'a, R: BufRead, W: Write> Executor<'a, R, W> {
                 let descs = self.ensure_on_disk(input)?;
                 for (start, n_blk) in descs {
                     if n_blk == 0 { continue; }
-                    let blocks = self.read_blocks_batch(start, n_blk)?;
-                    for buf in &blocks {
-                        let rc = u16::from_le_bytes([buf[bs-2], buf[bs-1]]) as usize;
-                        let mut off = 0usize;
-                        for _ in 0..rc {
-                            if let Some(row) = decode_row(buf, &mut off) {
-                                chunk.push(row);
-                                if chunk.len() >= pass1_cap {
-                                    sort_slice(&mut chunk, &specs);
-                                    runs.push(self.spill(&chunk)?);
-                                    chunk.clear();
+                    let mut blk_idx = 0u64;
+                    while blk_idx < n_blk {
+                        let batch = (64u64).min(n_blk - blk_idx);
+                        let blocks = self.read_blocks_batch(start + blk_idx, batch)?;
+                        for buf in &blocks {
+                            let rc = u16::from_le_bytes([buf[bs-2], buf[bs-1]]) as usize;
+                            let mut off = 0usize;
+                            for _ in 0..rc {
+                                if let Some(row) = decode_row(buf, &mut off) {
+                                    chunk.push(row);
+                                    if chunk.len() >= pass1_cap {
+                                        sort_slice(&mut chunk, &specs);
+                                        runs.push(self.spill(&chunk)?);
+                                        chunk.clear();
+                                    }
                                 }
                             }
                         }
+                        blk_idx += batch;
                     }
                 }
             }
@@ -1634,7 +1824,84 @@ impl<'a, R: BufRead, W: Write> Executor<'a, R, W> {
 
         let merge_budget = self.memory_limit_bytes / MERGE_BUDGET_FRAC;
         let merge_cap = Self::safe_cap(merge_budget, bpr);
-        self.merge_sorted_runs(runs, &specs, merge_cap, merge_budget)
+        self.merge_sorted_runs_top(runs, &specs, merge_cap, merge_budget)
+    }
+
+/// Fused scan + sort pass-1: streams rows directly from disk into sort chunks
+/// without ever materializing the full scan output. Eliminates one full
+/// read+write of the dataset compared to exec_node(scan) then sort.
+    fn exec_sort_fused_scan(&mut self, data: &OptSortData) -> Result<RunSet> {
+        eprintln!("[SORT-FUSED] streaming scan directly into sort pass-1");
+        let specs = data.sort_specs.clone();
+        let bs = self.block_size as usize;
+
+        // Estimate bpr from schema without reading data
+        let bpr = match data.underlying.as_ref() {
+            OptQueryOp::FilteredScan(d) => {
+                let ncols = self.ctx.get_table_specs()
+                    .iter().find(|t| t.name == d.table_id)
+                    .map(|s| s.column_specs.len()).unwrap_or(8);
+                let proj_cols = d.project.as_ref().map(|p| p.len()).unwrap_or(ncols);
+                // Each field: ~20 bytes key string + ~15 bytes value + ~48 bytes Vec/String overhead
+                proj_cols * 83 + 64
+            }
+            _ => 500,
+        };
+
+        let pass1_budget = self.memory_limit_bytes / 3;
+        let pass1_cap = Self::safe_cap(pass1_budget, bpr).max(MIN_CAP_ROWS);
+        eprintln!("[SORT-FUSED] bpr~{} pass1_cap={}", bpr, pass1_cap);
+
+        let mut runs: Vec<ScratchRun> = Vec::new();
+        let mut chunk: Vec<Row> = Vec::new();  // no pre-allocation — grows as needed
+
+        // Stream rows from child directly into chunks — no intermediate RunSet
+        let child = data.underlying.as_ref() as *const OptQueryOp;
+        self.stream_op(unsafe { &*child }, &mut |this, row| {
+            chunk.push(row);
+            if chunk.len() >= pass1_cap {
+                sort_slice(&mut chunk, &specs);
+                runs.push(this.spill(&chunk)?);
+                chunk.clear();
+            }
+            Ok(())
+        })?;
+
+        if !chunk.is_empty() {
+            sort_slice(&mut chunk, &specs);
+            // If only one chunk and it fits in memory, return InMemory directly
+            if runs.is_empty() {
+                eprintln!("[SORT-FUSED] single chunk in-memory rows={}", chunk.len());
+                return Ok(RunSet::InMemory(chunk));
+            }
+            runs.push(self.spill(&chunk)?);
+            chunk.clear();
+        }
+        drop(chunk);
+
+        eprintln!("[SORT-FUSED] pass1: {} sorted runs", runs.len());
+
+        if runs.is_empty() { return Ok(RunSet::InMemory(Vec::new())); }
+        if runs.len() == 1 {
+            let r = runs.remove(0);
+            return Ok(RunSet::Spilled { row_count: r.row_count, runs: vec![r] });
+        }
+
+        // Sample bpr from first run for merge sizing
+        let actual_bpr = {
+            let buf = self.read_block_direct(runs[0].start_block)?;
+            let rc = u16::from_le_bytes([buf[bs-2], buf[bs-1]]) as usize;
+            if rc > 0 {
+                let mut off = 0usize;
+                decode_row(&buf, &mut off)
+                    .map(|r| Self::row_ram(&r).max(64))
+                    .unwrap_or(bpr)
+            } else { bpr }
+        };
+
+        let merge_budget = self.memory_limit_bytes / MERGE_BUDGET_FRAC;
+        let merge_cap = Self::safe_cap(merge_budget, actual_bpr);
+        self.merge_sorted_runs_top(runs, &specs, merge_cap, merge_budget)
     }
 
     fn sample_bpr(&mut self, rs: &RunSet) -> Result<usize> {
@@ -1668,82 +1935,192 @@ impl<'a, R: BufRead, W: Write> Executor<'a, R, W> {
     specs: &[SortSpec],
     out_cap: usize,
     merge_budget: usize,
-) -> Result<RunSet> {
-        let bs = self.block_size as usize;
-        eprintln!("[OPT-08][OPT-11-EXEC] merge {} runs out_cap={} (tournament tree)", runs.len(), out_cap);
+        ) -> Result<ScratchRun> {
+            // Two-level merge: group into batches of MAX_FANIN, merge each group,
+            // then final merge of the intermediate runs.
+            // MAX_FANIN=8 keeps head memory at 8*4KB=32KB.
+            const MAX_FANIN: usize = 8;
 
-        // Initialize each head by reading only its FIRST block
+            if runs.len() <= MAX_FANIN {
+                // Small enough for direct merge
+                return self.merge_run_group_flat(runs, specs, out_cap, merge_budget);
+            }
+
+            eprintln!("[SORT-MERGE] {} runs > {}, two-level merge", runs.len(), MAX_FANIN);
+
+            // Phase 1: merge groups of MAX_FANIN → one intermediate run per group
+            // Give each group merge 1/3 of budget for its output buffer
+            let group_merge_budget = self.memory_limit_bytes / 3;
+            let group_bpr = out_cap.max(1); // reuse caller's bpr estimate
+            let group_cap = Self::safe_cap(group_merge_budget, group_bpr);
+
+            let mut intermediate: Vec<ScratchRun> = Vec::new();
+            for group in runs.chunks(MAX_FANIN) {
+                let gv: Vec<ScratchRun> = group.iter().map(|r| ScratchRun {
+                    start_block: r.start_block,
+                    num_blocks:  r.num_blocks,
+                    row_count:   r.row_count,
+                }).collect();
+                let r = self.merge_run_group_flat(gv, specs, group_cap, group_merge_budget)?;
+                eprintln!("[SORT-MERGE] group → {} rows", r.row_count);
+                intermediate.push(r);
+            }
+
+            eprintln!("[SORT-MERGE] phase2: {} intermediate runs", intermediate.len());
+
+            // Phase 2: final merge of intermediate runs — give it most of budget
+            let final_budget = self.memory_limit_bytes / 2;
+            let final_cap = Self::safe_cap(final_budget, group_bpr);
+            self.merge_run_group_flat(intermediate, specs, final_cap, final_budget)
+        }
+
+        /// Merge runs into a SINGLE ScratchRun. Never recurses.
+        /// If the output would exceed merge_budget, it spills to multiple
+        /// ScratchRuns then concatenates them (logically one run via re-read).
+    fn merge_run_group_flat(
+        &mut self,
+        runs: Vec<ScratchRun>,
+        specs: &[SortSpec],
+        _out_cap: usize,
+        _merge_budget: usize,
+    ) -> Result<ScratchRun> {
+        let bs = self.block_size as usize;
+        let usable = bs - 2;
+        eprintln!("[MERGE-GROUP] merging {} runs (flat)", runs.len());
+
         let mut heads: Vec<MergeHead> = Vec::with_capacity(runs.len());
         for run in &runs {
             if run.num_blocks == 0 || run.row_count == 0 { continue; }
-            // Read only the first block of this run
-            let buf = self.read_block_direct(run.start_block)?;
-            let brc = u16::from_le_bytes([buf[bs-2], buf[bs-1]]) as usize;
+            let prefetch_count = (64u64).min(run.num_blocks);
+            let mut all_blocks = self.read_blocks_batch(run.start_block, prefetch_count)?;
+            if all_blocks.is_empty() { continue; }
+            let first = all_blocks.remove(0);
+            let brc = u16::from_le_bytes([first[bs-2], first[bs-1]]) as usize;
+            let lookahead: VecDeque<Vec<u8>> = all_blocks.into_iter().collect();
             let mut h = MergeHead {
-                run_start:       run.start_block,
-                run_blocks:      run.num_blocks,
-                cur_block:       0,
-                current_block:   buf,
+                run_start: run.start_block,
+                run_blocks: run.num_blocks,
+                cur_block: 0,
+                current_block: first,
                 block_row_count: brc,
-                block_row_idx:   0,
-                block_off:       0,
-                current_row:     None,
+                block_row_idx: 0,
+                block_off: 0,
+                current_row: None,
+                lookahead,
             };
             h.advance(bs);
             if h.current_row.is_some() { heads.push(h); }
         }
 
-        // Build min-heap
         let mut heap: BinaryHeap<Reverse<HeapEntry>> = BinaryHeap::with_capacity(heads.len());
         for (idx, h) in heads.iter().enumerate() {
             if let Some(ref row) = h.current_row {
                 heap.push(Reverse(HeapEntry {
-                    key:      row_to_heap_key(row, specs),
+                    key: row_to_heap_key(row, specs),
                     head_idx: idx,
                 }));
             }
         }
 
-        let mut out_buf: Vec<Row> = Vec::new();
-        let mut out_runs: Vec<ScratchRun> = Vec::new();
+        let out_start = self.next_anon;
+        let mut out_nblk = 0u64;
         let mut out_total = 0usize;
-        let mut buf_ram_running = 0usize;
+
+        const WRITE_BATCH: usize = 256;
+        // pending holds complete sealed blocks ready to write
+        let mut pending: Vec<u8> = Vec::with_capacity(WRITE_BATCH * bs);
+        // pending_start is the absolute block number of the first block in pending
+        let mut pending_start: u64 = out_start;
+
+        let mut cur_blk = vec![0u8; bs];
+        let mut cur_off = 0usize;
+        let mut cur_cnt = 0u16;
+        let mut enc = Vec::with_capacity(512);
+
+        // Seal the current partial block into pending
+        macro_rules! seal_block {
+            () => {
+                if cur_cnt > 0 || cur_off > 0 {
+                    cur_blk[bs-2] = (cur_cnt & 0xFF) as u8;
+                    cur_blk[bs-1] = (cur_cnt >> 8) as u8;
+                    pending.extend_from_slice(&cur_blk);
+                    out_nblk += 1;
+                    cur_blk.fill(0);
+                    cur_off = 0;
+                    cur_cnt = 0;
+                }
+            };
+        }
+
+        // Flush pending blocks to disk in one request
+        macro_rules! flush_pending {
+            () => {
+                if !pending.is_empty() {
+                    let n_blks = pending.len() / bs;
+                    self.disk_out.write_all(
+                        format!("put block {} {}\n", pending_start, n_blks).as_bytes()
+                    )?;
+                    self.disk_out.write_all(&pending)?;
+                    self.disk_out.flush()?;
+                    pending_start += n_blks as u64;
+                    pending.clear();
+                }
+            };
+        }
 
         while let Some(Reverse(entry)) = heap.pop() {
             let idx = entry.head_idx;
             let row = heads[idx].current_row.take().unwrap();
-            buf_ram_running += Self::row_ram(&row);
             out_total += 1;
-            out_buf.push(row);
 
-            if out_buf.len() >= out_cap || buf_ram_running >= merge_budget {
-                let run = self.spill(&out_buf)?;
-                out_runs.push(run);
-                out_buf.clear();
-                buf_ram_running = 0;
+            enc.clear();
+            encode_row(&row, &mut enc);
+            if enc.len() > usable {
+                anyhow::bail!("[MERGE] row {} B > usable {} B", enc.len(), usable);
             }
 
-            // Advance this head
-            heads[idx].advance(bs);
+            if cur_off + enc.len() > usable {
+                seal_block!();
+                if pending.len() >= WRITE_BATCH * bs {
+                    flush_pending!();
+                }
+            }
 
-            // If current block exhausted and more blocks remain, load next block
+            cur_blk[cur_off..cur_off+enc.len()].copy_from_slice(&enc);
+            cur_off += enc.len();
+            cur_cnt += 1;
+
+            // Advance head
+            heads[idx].advance(bs);
             if heads[idx].needs_next_block() {
-                let next_abs = heads[idx].run_start + heads[idx].cur_block + 1;
-                let buf = self.read_block_direct(next_abs)?;
-                heads[idx].load_block(buf, bs);
+                if !heads[idx].load_from_lookahead(bs) {
+                    let next_abs = heads[idx].run_start + heads[idx].cur_block + 1;
+                    let remaining = heads[idx].run_blocks - (heads[idx].cur_block + 1);
+                    let prefetch = (64u64).min(remaining);
+                    let mut fetched = self.read_blocks_batch(next_abs, prefetch)?;
+                    if !fetched.is_empty() {
+                        let first = fetched.remove(0);
+                        for blk in fetched { heads[idx].lookahead.push_back(blk); }
+                        heads[idx].load_block(first, bs);
+                    }
+                }
             }
 
             if let Some(ref row) = heads[idx].current_row {
                 heap.push(Reverse(HeapEntry {
-                    key:      row_to_heap_key(row, specs),
+                    key: row_to_heap_key(row, specs),
                     head_idx: idx,
                 }));
             }
         }
 
-        let rs = self.finalize_output(out_buf, out_runs, out_total)?;
-        eprintln!("[OPT-08] merge done rows={}", rs.row_count());
-        Ok(rs)
+        // Flush final partial block and remaining pending
+        seal_block!();
+        flush_pending!();
+
+        self.next_anon = out_start + out_nblk;
+        eprintln!("[MERGE-GROUP] done: {} rows → {} blocks", out_total, out_nblk);
+        Ok(ScratchRun { start_block: out_start, num_blocks: out_nblk, row_count: out_total })
     }
 
     fn stream_runset<F>(&mut self, rs: RunSet, mut f: F) -> Result<()>
@@ -1890,13 +2267,28 @@ fn hash_str(s: &str) -> usize {
     h
 }
 
+#[inline(always)]
 fn find_col<'a>(row: &'a Row, name: &str) -> Option<&'a String> {
-    row.iter().find(|(k, _)| {
-        k == name
-        || k.ends_with(&format!(".{}", name))
-        || name.contains('.') && k.split('.').last() == name.split('.').last()
-           && k.split('.').next() == name.split('.').next()
-    }).map(|(_, v)| v)
+    // Fast path: exact match (covers fully-qualified "table.col" names)
+    for (k, v) in row {
+        if k == name { return Some(v); }
+    }
+    // Slow path: bare-name suffix match
+    // Split off the prefix (everything before last '.') for both sides.
+    let name_bare = name.rsplit_once('.').map(|(_, b)| b).unwrap_or(name);
+    let name_pfx  = name.rsplit_once('.').map(|(p, _)| p);
+    for (k, v) in row {
+        let k_bare = k.rsplit_once('.').map(|(_, b)| b).unwrap_or(k.as_str());
+        if k_bare != name_bare { continue; }
+        // If both are qualified (have a prefix), the prefixes must also agree.
+        if let Some(np) = name_pfx {
+            if let Some((kp, _)) = k.rsplit_once('.') {
+                if kp != np { continue; }
+            }
+        }
+        return Some(v);
+    }
+    None
 }
 
 fn col_val<'a>(row: &'a Row, name: &str) -> Option<&'a str> { find_col(row, name).map(String::as_str) }
@@ -1942,8 +2334,37 @@ fn eval_preds(row: &Row, preds: &[Predicate]) -> bool {
     })
 }
 
-fn sort_slice(tbl: &mut Table, specs: &[SortSpec]) { tbl.sort_unstable_by(|a, b| cmp_rows(a, b, specs)); }
+fn sort_slice(tbl: &mut Table, specs: &[SortSpec]) {
+    if specs.is_empty() || tbl.is_empty() { return; }
+    // Pre-extract sort keys once per row to avoid O(cols) find_col in the
+    // hot comparator path (called O(n log n) times).
+    let mut keyed: Vec<(Vec<String>, Row)> = std::mem::take(tbl)
+        .into_iter()
+        .map(|row| {
+            let keys: Vec<String> = specs.iter()
+                .map(|s| find_col(&row, &s.column_name).cloned().unwrap_or_default())
+                .collect();
+            (keys, row)
+        })
+        .collect();
 
+    keyed.sort_unstable_by(|(ak, _), (bk, _)| {
+        for (i, spec) in specs.iter().enumerate() {
+            let av = &ak[i];
+            let bv = &bk[i];
+            let ord = match (av.parse::<f64>(), bv.parse::<f64>()) {
+                (Ok(a), Ok(b)) => a.partial_cmp(&b).unwrap_or(std::cmp::Ordering::Equal),
+                _              => av.as_str().cmp(bv.as_str()),
+            };
+            if ord != std::cmp::Ordering::Equal {
+                return if spec.ascending { ord } else { ord.reverse() };
+            }
+        }
+        std::cmp::Ordering::Equal
+    });
+
+    *tbl = keyed.into_iter().map(|(_, row)| row).collect();
+}
 fn cmp_rows(a: &Row, b: &Row, specs: &[SortSpec]) -> std::cmp::Ordering {
     use std::cmp::Ordering;
     for s in specs {
